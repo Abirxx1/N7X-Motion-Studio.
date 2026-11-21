@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ProjectEntity::class, MediaClipEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -33,5 +33,16 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
             "CREATE INDEX IF NOT EXISTS `index_media_clips_projectId` " +
                 "ON `media_clips` (`projectId`)"
         )
+    }
+}
+
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `media_clips` ADD COLUMN `trimStartMs` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `media_clips` ADD COLUMN `trimEndMs` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `media_clips` ADD COLUMN `speed` REAL NOT NULL DEFAULT 1.0")
+        db.execSQL("ALTER TABLE `media_clips` ADD COLUMN `volume` REAL NOT NULL DEFAULT 1.0")
+        db.execSQL("UPDATE `media_clips` SET `trimEndMs` = `durationMs`")
+        db.execSQL("UPDATE `media_clips` SET `durationMs` = 30000 WHERE `isVideo` = 0")
     }
 }

@@ -8,15 +8,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 
-/** Copies picked media into app storage so it stays available after restart. */
-class MediaImporter(
-    private val context: Context,
-    private val clipDao: MediaClipDao
-) {
-    suspend fun import(projectId: Long, uris: List<Uri>): Int = withContext(Dispatchers.IO) {
+/** Copies picked media into app storage and returns clips (ids come from nextId). */
+class MediaImporter(private val context: Context) {
+
+    suspend fun import(
+        projectId: Long,
+        uris: List<Uri>,
+        nextId: () -> Long
+    ): List<MediaClipEntity> = withContext(Dispatchers.IO) {
         val dir = File(context.filesDir, "projects/$projectId/media").apply { mkdirs() }
-        var position = clipDao.nextPosition(projectId)
-        var added = 0
+        val result = mutableListOf<MediaClipEntity>()
         for (uri in uris) {
             try {
                 val mime = context.contentResolver.getType(uri) ?: continue
@@ -25,33 +26,36 @@ class MediaImporter(
 
                 val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
                     ?: if (isVideo) "mp4" else "jpg"
-                val file = File(dir, "${System.currentTimeMillis()}_$position.$ext")
+                val file = File(dir, "${System.currentTimeMillis()}_${result.size}.$ext")
 
                 val input = context.contentResolver.openInputStream(uri) ?: continue
                 input.use { src -> file.outputStream().use { dst -> src.copyTo(dst) } }
 
-                val duration = if (isVideo) readDuration(file) else IMAGE_DURATION_MS
-                if (duration <= 0L) {
+                val sourceMs = if (isVideo) readDuration(file) else MAX_IMAGE_MS
+                if (sourceMs <= 0L) {
                     file.delete()
                     continue
                 }
-                clipDao.insert(
+                result.add(
                     MediaClipEntity(
+                        id = nextId(),
                         projectId = projectId,
                         path = file.absolutePath,
                         mimeType = mime,
                         isVideo = isVideo,
-                        durationMs = duration,
-                        position = position
+                        durationMs = sourceMs,
+                        position = 0,
+                        trimStartMs = 0L,
+                        trimEndMs = if (isVideo) sourceMs else DEFAULT_IMAGE_MS,
+                        speed = 1f,
+                        volume = 1f
                     )
                 )
-                position++
-                added++
             } catch (e: Exception) {
                 // skip files that cannot be read
             }
         }
-        added
+        result
     }
 
     private fun readDuration(file: File): Long {
@@ -67,6 +71,7 @@ class MediaImporter(
     }
 
     companion object {
-        const val IMAGE_DURATION_MS = 3000L
+        const val DEFAULT_IMAGE_MS = 3000L
+        const val MAX_IMAGE_MS = 30000L
     }
 }

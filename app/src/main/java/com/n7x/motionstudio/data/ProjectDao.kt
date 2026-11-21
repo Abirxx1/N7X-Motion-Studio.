@@ -11,7 +11,7 @@ interface ProjectDao {
         """
         SELECT p.*,
         (SELECT COUNT(*) FROM media_clips WHERE projectId = p.id) AS clipCount,
-        (SELECT COALESCE(SUM(durationMs), 0) FROM media_clips WHERE projectId = p.id) AS totalMs,
+        (SELECT COALESCE(CAST(SUM(CASE WHEN isVideo = 1 THEN (trimEndMs - trimStartMs) / speed ELSE (trimEndMs - trimStartMs) END) AS INTEGER), 0) FROM media_clips WHERE projectId = p.id) AS totalMs,
         (SELECT path FROM media_clips WHERE projectId = p.id ORDER BY position LIMIT 1) AS coverPath,
         (SELECT isVideo FROM media_clips WHERE projectId = p.id ORDER BY position LIMIT 1) AS coverIsVideo
         FROM projects p ORDER BY p.updatedAt DESC

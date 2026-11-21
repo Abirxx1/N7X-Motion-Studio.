@@ -54,3 +54,6 @@ fun rememberThumbnail(path: String?, isVideo: Boolean): State<ImageBitmap?> {
         }
     }
 }
+
+fun formatSeconds(ms: Long): String =
+    String.format(Locale.US, "%.1fs", ms / 1000f)

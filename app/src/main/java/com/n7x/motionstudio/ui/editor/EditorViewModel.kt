@@ -59,8 +59,11 @@ class EditorViewModel(
     init {
         viewModelScope.launch {
             _project.value = projectDao.getById(projectId)
-            val list = saveMutex.withLock { clipDao.getClips(projectId) }
-            idCounter.set((list.maxOfOrNull { it.id } ?: 0L) + 1L)
+            val list = saveMutex.withLock {
+                // ids must be unique across ALL projects (the id is the table's primary key)
+                idCounter.set(clipDao.maxId() + 1L)
+                clipDao.getClips(projectId)
+            }
             _clips.value = list
             loaded = true
         }

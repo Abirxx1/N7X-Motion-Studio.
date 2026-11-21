@@ -2,6 +2,8 @@ package com.n7x.motionstudio.ui.editor
 
 import android.net.Uri
 import android.view.LayoutInflater
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.res.painterResource
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -1056,7 +1058,7 @@ private fun LookPanel(
     onClearLut: () -> Unit
 ) {
     val current = live ?: clip.look()
-    val thumb by rememberThumbnail(clip.path, clip.isVideo)
+    val sample = painterResource(R.drawable.sample_a)
     LazyRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         contentPadding = PaddingValues(vertical = 6.dp)
@@ -1065,7 +1067,7 @@ private fun LookPanel(
             val matrix = remember(id) {
                 ColorOps.build(id, 0f, 0f, 1f)?.let { ColorMatrix(it) }
             }
-            FilterTile(name, matrix, thumb, current.filterId == id) {
+            FilterTile(name, matrix, sample, current.filterId == id) {
                 onSet(current.copy(filterId = id))
             }
         }
@@ -1099,7 +1101,7 @@ private fun LookPanel(
 private fun FilterTile(
     name: String,
     matrix: ColorMatrix?,
-    thumb: ImageBitmap?,
+    picture: Painter,
     selected: Boolean,
     onClick: () -> Unit
 ) {
@@ -1122,15 +1124,13 @@ private fun FilterTile(
                     shape = RoundedCornerShape(8.dp)
                 )
         ) {
-            if (thumb != null) {
-                Image(
-                    bitmap = thumb,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    colorFilter = matrix?.let { ColorFilter.colorMatrix(it) },
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
+            Image(
+                painter = picture,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                colorFilter = matrix?.let { ColorFilter.colorMatrix(it) },
+                modifier = Modifier.fillMaxSize()
+            )
         }
         Text(
             name,
@@ -1148,15 +1148,15 @@ private fun TransitionPanel(
     onChange: (String, Long) -> Unit
 ) {
     val hasNext = next != null
-    val thumbA by rememberThumbnail(clip.path, clip.isVideo)
-    val thumbB by rememberThumbnail(next?.path, next?.isVideo ?: false)
+    val pictureA = painterResource(R.drawable.sample_a)
+    val pictureB = painterResource(R.drawable.sample_b)
     var seconds by remember(clip.id, clip.transitionMs) { mutableFloatStateOf(clip.transitionMs / 1000f) }
     val current = Transitions.canonical(clip.transitionType)
     Text(
         if (hasNext) {
             "Plays across the cut between this clip and the next one."
         } else {
-            "Select a clip that has another clip after it."
+            "Pick a clip that has another clip after it to use these."
         },
         fontSize = 12.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1166,7 +1166,7 @@ private fun TransitionPanel(
         contentPadding = PaddingValues(vertical = 6.dp)
     ) {
         items(Transitions.TYPES) { (id, name) ->
-            TransitionTile(name, id, hasNext && current == id, hasNext, thumbA, thumbB) {
+            TransitionTile(name, id, hasNext && current == id, hasNext, pictureA, pictureB) {
                 onChange(id, clip.transitionMs)
             }
         }
@@ -1192,8 +1192,8 @@ private fun TransitionTile(
     type: String,
     selected: Boolean,
     enabled: Boolean,
-    thumbA: ImageBitmap?,
-    thumbB: ImageBitmap?,
+    pictureA: Painter,
+    pictureB: Painter,
     onClick: () -> Unit
 ) {
     val infinite = rememberInfiniteTransition(label = "tile")
@@ -1210,7 +1210,7 @@ private fun TransitionTile(
         firstHalf -> Transitions.adjust(type, Transitions.ease(progress * 2f), 0f)
         else -> Transitions.adjust(type, 0f, Transitions.ease(1f - (progress - 0.5f) * 2f))
     }
-    val bitmap = if (!animated || firstHalf) thumbA else (thumbB ?: thumbA)
+    val picture = if (!animated || firstHalf) pictureA else pictureB
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
@@ -1230,25 +1230,23 @@ private fun TransitionTile(
                     shape = RoundedCornerShape(8.dp)
                 )
         ) {
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer {
-                            translationX = adj.dx * size.width
-                            translationY = adj.dy * size.height
-                            scaleX = adj.scale
-                            scaleY = adj.scale
-                            rotationZ = adj.rotation
-                            rotationY = adj.flip
-                            cameraDistance = 12f * density
-                            alpha = adj.alpha
-                        }
-                )
-            }
+            Image(
+                painter = picture,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        translationX = adj.dx * size.width
+                        translationY = adj.dy * size.height
+                        scaleX = adj.scale
+                        scaleY = adj.scale
+                        rotationZ = adj.rotation
+                        rotationY = adj.flip
+                        cameraDistance = 12f * density
+                        alpha = adj.alpha
+                    }
+            )
             if (adj.white > 0f) {
                 Box(
                     Modifier

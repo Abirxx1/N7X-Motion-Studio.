@@ -13,8 +13,8 @@ android {
         applicationId = "com.n7x.motionstudio"
         minSdk = 28
         targetSdk = 34
-        versionCode = 8
-        versionName = "0.5.1"
+        versionCode = 10
+        versionName = "0.5.3"
     }
 
     signingConfigs {
@@ -65,3 +65,17 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.media3:media3-effect:1.4.1")
 }
+
+// The filter and transition previews use these two pictures. Fail the build if they are missing.
+tasks.register("verifySamples") {
+    val files = listOf(
+        file("src/main/res/drawable-nodpi/sample_a.jpg"),
+        file("src/main/res/drawable-nodpi/sample_b.jpg")
+    )
+    doLast {
+        files.forEach { f ->
+            require(f.exists() && f.length() > 5000L) { "Sample picture is missing or empty: ${f.name}" }
+        }
+    }
+}
+tasks.matching { it.name == "preBuild" }.configureEach { dependsOn("verifySamples") }

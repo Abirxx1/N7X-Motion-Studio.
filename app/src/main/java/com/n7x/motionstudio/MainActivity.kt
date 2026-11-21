@@ -1,5 +1,6 @@
 package com.n7x.motionstudio
 
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -23,6 +24,18 @@ import com.n7x.motionstudio.ui.navigation.N7XNavGraph
 import com.n7x.motionstudio.ui.theme.N7XTheme
 
 class MainActivity : ComponentActivity() {
+
+    /** True when both bundled sample pictures can be decoded from the APK. */
+    private fun samplePicturesLoad(): Boolean {
+        return listOf(R.drawable.sample_a, R.drawable.sample_b).all { id ->
+            try {
+                BitmapFactory.decodeResource(resources, id) != null
+            } catch (e: Exception) {
+                false
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -32,6 +45,22 @@ class MainActivity : ComponentActivity() {
                 N7XNavGraph(app)
 
                 var crash by remember { mutableStateOf(CrashLog.read(app)) }
+                var samplesBroken by remember { mutableStateOf(!samplePicturesLoad()) }
+                if (samplesBroken) {
+                    AlertDialog(
+                        onDismissRequest = { samplesBroken = false },
+                        title = { Text("Sample pictures missing") },
+                        text = {
+                            Text(
+                                "The built-in sample pictures used by the filter and " +
+                                    "transition previews could not be loaded."
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { samplesBroken = false }) { Text("OK") }
+                        }
+                    )
+                }
                 val clipboard = LocalClipboardManager.current
                 crash?.let { text ->
                     AlertDialog(

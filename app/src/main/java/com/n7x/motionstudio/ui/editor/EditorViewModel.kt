@@ -100,9 +100,13 @@ class EditorViewModel(
     /** Autosave: always writes the latest state. */
     private fun save() {
         saveScope.launch {
-            saveMutex.withLock {
-                clipDao.replaceAll(projectId, _clips.value)
-                projectDao.touch(projectId, System.currentTimeMillis())
+            try {
+                saveMutex.withLock {
+                    clipDao.replaceAll(projectId, _clips.value)
+                    projectDao.touch(projectId, System.currentTimeMillis())
+                }
+            } catch (e: Exception) {
+                _message.value = "Autosave failed: ${e.message}"
             }
         }
     }

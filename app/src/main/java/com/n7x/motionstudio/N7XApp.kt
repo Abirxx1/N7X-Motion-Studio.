@@ -12,4 +12,9 @@ class N7XApp : Application() {
             .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
             .build()
     }
+
+    override fun onCreate() {
+        super.onCreate()
+        CrashLog.install(this)
+    }
 }

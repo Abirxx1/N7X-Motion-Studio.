@@ -163,6 +163,7 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
 
     // ----- editor state -----
     val total = clips.sumOf { it.timelineMs() }
+    val maxPx = max(20f, 150_000f / max(total / 1000f, 1f))
     var timeMs by remember { mutableFloatStateOf(0f) }
     var touching by remember { mutableStateOf(false) }
     var pxPerSec by remember { mutableFloatStateOf(80f) }
@@ -299,15 +300,17 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
         Timeline(
             clips = clips,
             timeMs = timeMs,
-            pxPerSec = pxPerSec,
+            pxPerSec = pxPerSec.coerceAtMost(maxPx),
             selectedId = selectedId,
             onPan = { dx ->
                 if (clips.isNotEmpty()) {
-                    timeMs = (timeMs - dx / (pxPerSec / 1000f)).coerceIn(0f, total.toFloat())
+                    timeMs = (timeMs - dx / (pxPerSec.coerceAtMost(maxPx) / 1000f)).coerceIn(0f, total.toFloat())
                     seekTimeline(exo, clips, timeMs.toLong())
                 }
             },
-            onZoom = { zoom -> pxPerSec = (pxPerSec * zoom).coerceIn(20f, 400f) },
+            onZoom = { zoom ->
+                pxPerSec = (pxPerSec * zoom).coerceIn(20f.coerceAtMost(maxPx), 400f.coerceAtMost(maxPx))
+            },
             onTouch = { down ->
                 touching = down
                 if (down) exo.pause()
@@ -466,7 +469,8 @@ private fun Timeline(
                     1.dp.toPx()
                 )
                 if (stepSec >= 1f || (t % 1000f) < 1f) {
-                    drawText(measurer, formatTime(t.toLong()), Offset(x + 3.dp.toPx(), 0f), style)
+                    val layout = measurer.measure(formatTime(t.toLong()), style)
+                    drawText(layout, topLeft = Offset(x + 3.dp.toPx(), 0f))
                 }
                 t += stepMs
             }

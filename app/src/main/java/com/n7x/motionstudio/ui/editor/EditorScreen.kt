@@ -2,6 +2,19 @@ package com.n7x.motionstudio.ui.editor
 
 import android.net.Uri
 import android.view.LayoutInflater
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.media3.common.Effect
+import androidx.media3.effect.SingleColorLut
+import com.n7x.motionstudio.effects.ColorOps
+import com.n7x.motionstudio.effects.CubeLut
+import com.n7x.motionstudio.effects.Look
+import com.n7x.motionstudio.effects.Transitions
+import com.n7x.motionstudio.effects.look
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.graphics.Path
@@ -120,7 +133,7 @@ import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
-private enum class Panel { None, Trim, Speed, Volume, Animate }
+private enum class Panel { None, Trim, Speed, Volume, Animate, Look, Transition }
 
 @Composable
 fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
@@ -181,6 +194,11 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
     var selectedId by remember { mutableStateOf<Long?>(null) }
     var panel by remember { mutableStateOf(Panel.None) }
     var liveTransform by remember { mutableStateOf<Transform?>(null) }
+    var liveLook by remember { mutableStateOf<Look?>(null) }
+    val lutPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        val id = selectedId
+        if (uri != null && id != null) viewModel.importLut(id, uri)
+    }
     val keyMap = remember(clips) { clips.associate { it.id to Keyframes.parse(it.keyframes) } }
 
     // rebuild the playlist whenever the clips change
@@ -212,7 +230,10 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
     val selected = clips.firstOrNull { it.id == selectedId }
     val activePanel = if (selected != null) panel else Panel.None
 
-    LaunchedEffect(selectedId, panel, clips) { liveTransform = null }
+    LaunchedEffect(selectedId, panel, clips) {
+        liveTransform = null
+        liveLook = null
+    }
 
     // position of the selected clip on the timeline
     val selStart = selected?.let { sel -> clips.takeWhile { it.id != sel.id }.sumOf { it.timelineMs() } }
@@ -221,7 +242,7 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
 
     // animation applied to the preview
     val previewClip = clipAt(clips, timeMs.toLong()) ?: clips.lastOrNull()
-    val previewTransform: Transform = if (previewClip == null) {
+    val baseTransform: Transform = if (previewClip == null) {
         Transform.IDENTITY
     } else {
         val start = clips.takeWhile { it.id != previewClip.id }.sumOf { it.timelineMs() }
@@ -231,6 +252,27 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
         } else {
             Keyframes.evaluate(keyMap[previewClip.id].orEmpty(), (timeMs - start).toLong())
         }
+    }
+    val adjust = Transitions.at(
+        clips.map { it.timelineMs() },
+        clips.map { it.transitionType },
+        clips.map { it.transitionMs },
+        timeMs.toLong()
+    )
+    val previewTransform = baseTransform.copy(
+        x = baseTransform.x + adjust.dx,
+        scale = baseTransform.scale * adjust.scale,
+        rotation = baseTransform.rotation + adjust.rotation,
+        opacity = baseTransform.opacity * adjust.alpha
+    )
+    val previewLook: Look? = previewClip?.let { c ->
+        val live = liveLook
+        if (live != null && c.id == selectedId) live else c.look()
+    }
+    val previewMatrix = remember(previewLook) {
+        previewLook
+            ?.let { l -> ColorOps.build(l.filterId, l.brightness, l.contrast, l.saturation) }
+            ?.let { ColorMatrix(it) }
     }
 
     Column(
@@ -286,6 +328,19 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                         scaleY = previewTransform.scale
                         rotationZ = previewTransform.rotation
                         alpha = previewTransform.opacity
+                    }
+                    .drawWithContent {
+                        val matrix = previewMatrix
+                        if (matrix == null) {
+                            drawContent()
+                        } else {
+                            drawIntoCanvas { canvas ->
+                                val paint = Paint().apply { colorFilter = ColorFilter.colorMatrix(matrix) }
+                                canvas.saveLayer(Rect(0f, 0f, size.width, size.height), paint)
+                                drawContent()
+                                canvas.restore()
+                            }
+                        }
                     }
             )
             if (clips.isEmpty()) {
@@ -384,6 +439,8 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                 Panel.Trim -> "Trim"
                 Panel.Speed -> "Speed"
                 Panel.Animate -> "Animate"
+                Panel.Look -> "Look"
+                Panel.Transition -> "Transition"
                 else -> "Volume"
             }, onClose = { panel = Panel.None }) {
                 when (activePanel) {
@@ -418,6 +475,20 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                             onClear = { viewModel.clearKeyframes(selected.id) }
                         )
                     }
+                    Panel.Look -> LookPanel(
+                        clip = selected,
+                        live = liveLook,
+                        onLive = { liveLook = it },
+                        onCommit = { liveLook?.let { l -> viewModel.setLook(selected.id, l) } },
+                        onSet = { l -> viewModel.setLook(selected.id, l) },
+                        onPickLut = { lutPicker.launch(arrayOf("*/*")) },
+                        onClearLut = { viewModel.clearLut(selected.id) }
+                    )
+                    Panel.Transition -> TransitionPanel(
+                        clip = selected,
+                        hasNext = clips.lastOrNull()?.id != selected.id,
+                        onChange = { type, ms -> viewModel.setTransition(selected.id, type, ms) }
+                    )
                     Panel.None -> Unit
                 }
             }
@@ -448,6 +519,8 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                 Text("♪", color = tint, fontWeight = FontWeight.Bold, fontSize = 20.sp)
             }
             ToolButton("Animate", selected != null, { panel = Panel.Animate }) { tint -> DiamondIcon(tint) }
+            ToolButton("Look", selected != null, { panel = Panel.Look }) { tint -> LookIcon(tint) }
+            ToolButton("Transition", selected != null, { panel = Panel.Transition }) { tint -> TransitionIcon(tint) }
             ToolButton("Move left", selected != null, { selected?.let { viewModel.moveClip(it.id, -1) } }) { tint ->
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = null, tint = tint)
             }
@@ -636,6 +709,18 @@ private fun ClipBlock(
                         .background(Color(0x99000000), RoundedCornerShape(5.dp))
                         .padding(horizontal = 4.dp)
                 )
+                if (clip.transitionType != "none") {
+                    Text(
+                        clip.transitionType,
+                        fontSize = 10.sp,
+                        color = Color.White,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(3.dp)
+                            .background(Color(0xCC7C4DFF), RoundedCornerShape(5.dp))
+                            .padding(horizontal = 4.dp)
+                    )
+                }
                 if (clip.isVideo && clip.speed != 1f) {
                     Text(
                         String.format(Locale.US, "%.2gx", clip.speed),
@@ -941,6 +1026,118 @@ private fun DiamondIcon(tint: Color) {
 }
 
 @Composable
+private fun LookPanel(
+    clip: MediaClipEntity,
+    live: Look?,
+    onLive: (Look?) -> Unit,
+    onCommit: () -> Unit,
+    onSet: (Look) -> Unit,
+    onPickLut: () -> Unit,
+    onClearLut: () -> Unit
+) {
+    val current = live ?: clip.look()
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        ColorOps.FILTERS.forEach { (id, name) ->
+            ChipButton(name, true, current.filterId == id) { onSet(current.copy(filterId = id)) }
+        }
+    }
+    PropertySlider("Brightness", current.brightness, -1f..1f, true, "${(current.brightness * 100).roundToInt()}",
+        { onLive(current.copy(brightness = it)) }, onCommit)
+    PropertySlider("Contrast", current.contrast, -1f..1f, true, "${(current.contrast * 100).roundToInt()}",
+        { onLive(current.copy(contrast = it)) }, onCommit)
+    PropertySlider("Saturation", current.saturation, 0f..2f, true, "${(current.saturation * 100).roundToInt()}%",
+        { onLive(current.copy(saturation = it)) }, onCommit)
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        ChipButton("Reset look") { onSet(Look("none", 0f, 0f, 1f)) }
+        ChipButton("Import LUT (.cube)") { onPickLut() }
+        if (clip.lutPath.isNotEmpty()) ChipButton("Remove LUT") { onClearLut() }
+    }
+    Text(
+        if (clip.lutPath.isNotEmpty()) {
+            "A LUT is applied to this clip (shown on video clips)."
+        } else {
+            "Looks show on photos and videos. LUTs show on videos only."
+        },
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+@Composable
+private fun TransitionPanel(clip: MediaClipEntity, hasNext: Boolean, onChange: (String, Long) -> Unit) {
+    var seconds by remember(clip.id, clip.transitionMs) { mutableFloatStateOf(clip.transitionMs / 1000f) }
+    Text(
+        if (hasNext) {
+            "Plays across the cut between this clip and the next one."
+        } else {
+            "Select a clip that has another clip after it."
+        },
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Transitions.TYPES.forEach { (id, name) ->
+            ChipButton(name, hasNext, hasNext && clip.transitionType == id) {
+                onChange(id, clip.transitionMs)
+            }
+        }
+    }
+    Text(
+        "Length " + String.format(Locale.US, "%.1fs", seconds),
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Slider(
+        value = seconds,
+        onValueChange = { seconds = it },
+        valueRange = 0.2f..2f,
+        enabled = hasNext && clip.transitionType != "none",
+        onValueChangeFinished = { onChange(clip.transitionType, (seconds * 1000f).toLong()) }
+    )
+}
+
+@Composable
+private fun LookIcon(tint: Color) {
+    Canvas(Modifier.size(24.dp)) {
+        val r = size.width * 0.28f
+        drawCircle(tint, r, Offset(size.width * 0.38f, size.height * 0.5f), style = Stroke(2.dp.toPx()))
+        drawCircle(tint, r, Offset(size.width * 0.62f, size.height * 0.5f), style = Stroke(2.dp.toPx()))
+    }
+}
+
+@Composable
+private fun TransitionIcon(tint: Color) {
+    Canvas(Modifier.size(24.dp)) {
+        val h = size.height * 0.55f
+        val top = (size.height - h) / 2f
+        val w = size.width * 0.5f
+        drawRoundRect(
+            tint,
+            topLeft = Offset(1.dp.toPx(), top),
+            size = Size(w, h),
+            cornerRadius = CornerRadius(3.dp.toPx()),
+            style = Stroke(2.dp.toPx())
+        )
+        drawRoundRect(
+            tint,
+            topLeft = Offset(size.width - w - 1.dp.toPx(), top),
+            size = Size(w, h),
+            cornerRadius = CornerRadius(3.dp.toPx()),
+            style = Stroke(2.dp.toPx())
+        )
+    }
+}
+
+@Composable
 private fun ToolButton(
     label: String,
     enabled: Boolean,
@@ -995,6 +1192,31 @@ private fun applyClipParams(exo: ExoPlayer, clips: List<MediaClipEntity>, index:
     val clip = clips.getOrNull(index) ?: return
     exo.setPlaybackSpeed(clip.effSpeed)
     exo.volume = if (clip.isVideo) clip.volume else 1f
+    applyLut(exo, if (clip.isVideo) clip.lutPath else "")
+}
+
+private val appliedLut = java.util.WeakHashMap<ExoPlayer, String>()
+private val lutCache = HashMap<String, Effect>()
+
+/** A LUT is a video effect of the player. It is only touched when a LUT is used. */
+private fun applyLut(exo: ExoPlayer, path: String) {
+    if ((appliedLut[exo] ?: "") == path) return
+    var effects: List<Effect> = emptyList()
+    var applied = path
+    if (path.isNotEmpty()) {
+        try {
+            val effect = lutCache.getOrPut(path) { SingleColorLut.createFromCube(CubeLut.parse(File(path))) }
+            effects = listOf(effect)
+        } catch (e: Exception) {
+            applied = ""
+        }
+    }
+    try {
+        exo.setVideoEffects(effects)
+    } catch (e: Exception) {
+        // keep playing without the LUT
+    }
+    appliedLut[exo] = applied
 }
 
 /** Move the player to a position on the timeline (milliseconds). */

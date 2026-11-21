@@ -49,7 +49,14 @@ class MediaImporter(private val context: Context) {
                         trimEndMs = if (isVideo) sourceMs else DEFAULT_IMAGE_MS,
                         speed = 1f,
                         volume = 1f,
-                        keyframes = "[]"
+                        keyframes = "[]",
+                        filterId = "none",
+                        brightness = 0f,
+                        contrast = 0f,
+                        saturation = 1f,
+                        lutPath = "",
+                        transitionType = "none",
+                        transitionMs = 600L
                     )
                 )
             } catch (e: Exception) {
@@ -57,6 +64,19 @@ class MediaImporter(private val context: Context) {
             }
         }
         result
+    }
+
+    /** Copies a .cube LUT file into the project's folder. */
+    suspend fun copyLut(projectId: Long, uri: Uri): File? = withContext(Dispatchers.IO) {
+        try {
+            val dir = File(context.filesDir, "projects/$projectId/luts").apply { mkdirs() }
+            val file = File(dir, "${System.currentTimeMillis()}.cube")
+            val input = context.contentResolver.openInputStream(uri) ?: return@withContext null
+            input.use { src -> file.outputStream().use { dst -> src.copyTo(dst) } }
+            file
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun readDuration(file: File): Long {

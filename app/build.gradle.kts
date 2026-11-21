@@ -13,8 +13,8 @@ android {
         applicationId = "com.n7x.motionstudio"
         minSdk = 28
         targetSdk = 34
-        versionCode = 6
-        versionName = "0.4.1"
+        versionCode = 7
+        versionName = "0.5.0"
     }
 
     signingConfigs {
@@ -63,4 +63,5 @@ dependencies {
 
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
+    implementation("androidx.media3:media3-effect:1.4.1")
 }

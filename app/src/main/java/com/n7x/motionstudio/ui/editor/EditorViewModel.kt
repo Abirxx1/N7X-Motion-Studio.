@@ -14,6 +14,9 @@ import com.n7x.motionstudio.data.MediaImporter
 import com.n7x.motionstudio.data.ProjectDao
 import com.n7x.motionstudio.data.ProjectEntity
 import com.n7x.motionstudio.data.timelineMs
+import com.n7x.motionstudio.effects.CubeLut
+import com.n7x.motionstudio.effects.Look
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -159,7 +162,11 @@ class EditorViewModel(
                 val speed = if (clip.isVideo) clip.speed else 1f
                 val splitSource = clip.trimStartMs + (inside * speed).toLong()
                 val (leftKeys, rightKeys) = Keyframes.split(Keyframes.parse(clip.keyframes), inside)
-                val left = clip.copy(trimEndMs = splitSource, keyframes = Keyframes.toJson(leftKeys))
+                val left = clip.copy(
+                    trimEndMs = splitSource,
+                    keyframes = Keyframes.toJson(leftKeys),
+                    transitionType = "none"
+                )
                 val right = clip.copy(
                     id = idCounter.getAndIncrement(),
                     trimStartMs = splitSource,
@@ -235,6 +242,60 @@ class EditorViewModel(
         editKeyframes(clipId) { _, _ -> emptyList() }
     }
 
+    // ---------- look, LUT, transitions ----------
+
+    private fun editClip(id: Long, change: (MediaClipEntity) -> MediaClipEntity) {
+        val list = _clips.value
+        val index = list.indexOfFirst { it.id == id }
+        if (index < 0) return
+        val updated = change(list[index])
+        if (updated == list[index]) return
+        commit(list.toMutableList().also { it[index] = updated })
+    }
+
+    fun setLook(id: Long, look: Look) {
+        editClip(id) {
+            it.copy(
+                filterId = look.filterId,
+                brightness = look.brightness,
+                contrast = look.contrast,
+                saturation = look.saturation
+            )
+        }
+    }
+
+    fun setTransition(id: Long, type: String, ms: Long) {
+        editClip(id) { it.copy(transitionType = type, transitionMs = ms.coerceIn(200L, 2000L)) }
+    }
+
+    fun clearLut(id: Long) {
+        editClip(id) { it.copy(lutPath = "") }
+    }
+
+    fun importLut(id: Long, uri: Uri) {
+        viewModelScope.launch {
+            val file = importer.copyLut(projectId, uri)
+            if (file == null) {
+                _message.value = "Could not read the file"
+                return@launch
+            }
+            val error = withContext(Dispatchers.IO) {
+                try {
+                    CubeLut.parse(file)
+                    null
+                } catch (e: Exception) {
+                    e.message ?: "invalid file"
+                }
+            }
+            if (error != null) {
+                file.delete()
+                _message.value = "Not a usable .cube LUT: $error"
+                return@launch
+            }
+            editClip(id) { it.copy(lutPath = file.absolutePath) }
+        }
+    }
+
     fun clearMessage() {
         _message.value = null
     }
@@ -245,6 +306,10 @@ class EditorViewModel(
         val keep = _clips.value.map { it.path }.toSet()
         mediaDir.listFiles()?.forEach { file ->
             if (file.absolutePath !in keep) file.delete()
+        }
+        val keepLuts = _clips.value.map { it.lutPath }.toSet()
+        mediaDir.parentFile?.let { File(it, "luts") }?.listFiles()?.forEach { file ->
+            if (file.absolutePath !in keepLuts) file.delete()
         }
     }
 

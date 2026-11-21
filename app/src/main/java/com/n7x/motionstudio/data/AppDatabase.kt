@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ProjectEntity::class, MediaClipEntity::class],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -50,5 +50,17 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
 val MIGRATION_3_4 = object : Migration(3, 4) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE `media_clips` ADD COLUMN `keyframes` TEXT NOT NULL DEFAULT '[]'")
+    }
+}
+
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `media_clips` ADD COLUMN `filterId` TEXT NOT NULL DEFAULT 'none'")
+        db.execSQL("ALTER TABLE `media_clips` ADD COLUMN `brightness` REAL NOT NULL DEFAULT 0.0")
+        db.execSQL("ALTER TABLE `media_clips` ADD COLUMN `contrast` REAL NOT NULL DEFAULT 0.0")
+        db.execSQL("ALTER TABLE `media_clips` ADD COLUMN `saturation` REAL NOT NULL DEFAULT 1.0")
+        db.execSQL("ALTER TABLE `media_clips` ADD COLUMN `lutPath` TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE `media_clips` ADD COLUMN `transitionType` TEXT NOT NULL DEFAULT 'none'")
+        db.execSQL("ALTER TABLE `media_clips` ADD COLUMN `transitionMs` INTEGER NOT NULL DEFAULT 600")
     }
 }

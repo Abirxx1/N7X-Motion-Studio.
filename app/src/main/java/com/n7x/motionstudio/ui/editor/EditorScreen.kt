@@ -2,6 +2,16 @@ package com.n7x.motionstudio.ui.editor
 
 import android.net.Uri
 import android.view.LayoutInflater
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.ColorFilter
@@ -261,6 +271,7 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
     )
     val previewTransform = baseTransform.copy(
         x = baseTransform.x + adjust.dx,
+        y = baseTransform.y + adjust.dy,
         scale = baseTransform.scale * adjust.scale,
         rotation = baseTransform.rotation + adjust.rotation,
         opacity = baseTransform.opacity * adjust.alpha
@@ -327,6 +338,8 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                         scaleX = previewTransform.scale
                         scaleY = previewTransform.scale
                         rotationZ = previewTransform.rotation
+                        rotationY = adjust.flip
+                        cameraDistance = 12f * density
                         alpha = previewTransform.opacity
                     }
                     .drawWithContent {
@@ -343,6 +356,13 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                         }
                     }
             )
+            if (adjust.white > 0f) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(Color.White.copy(alpha = adjust.white.coerceIn(0f, 1f)))
+                )
+            }
             if (clips.isEmpty()) {
                 Text("Add media to start", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -486,7 +506,7 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                     )
                     Panel.Transition -> TransitionPanel(
                         clip = selected,
-                        hasNext = clips.lastOrNull()?.id != selected.id,
+                        next = clips.getOrNull(clips.indexOfFirst { it.id == selected.id } + 1),
                         onChange = { type, ms -> viewModel.setTransition(selected.id, type, ms) }
                     )
                     Panel.None -> Unit
@@ -711,7 +731,7 @@ private fun ClipBlock(
                 )
                 if (clip.transitionType != "none") {
                     Text(
-                        clip.transitionType,
+                        Transitions.nameOf(clip.transitionType),
                         fontSize = 10.sp,
                         color = Color.White,
                         modifier = Modifier
@@ -1036,12 +1056,18 @@ private fun LookPanel(
     onClearLut: () -> Unit
 ) {
     val current = live ?: clip.look()
-    Row(
-        modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    val thumb by rememberThumbnail(clip.path, clip.isVideo)
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        contentPadding = PaddingValues(vertical = 6.dp)
     ) {
-        ColorOps.FILTERS.forEach { (id, name) ->
-            ChipButton(name, true, current.filterId == id) { onSet(current.copy(filterId = id)) }
+        items(ColorOps.FILTERS) { (id, name) ->
+            val matrix = remember(id) {
+                ColorOps.build(id, 0f, 0f, 1f)?.let { ColorMatrix(it) }
+            }
+            FilterTile(name, matrix, thumb, current.filterId == id) {
+                onSet(current.copy(filterId = id))
+            }
         }
     }
     PropertySlider("Brightness", current.brightness, -1f..1f, true, "${(current.brightness * 100).roundToInt()}",
@@ -1070,8 +1096,62 @@ private fun LookPanel(
 }
 
 @Composable
-private fun TransitionPanel(clip: MediaClipEntity, hasNext: Boolean, onChange: (String, Long) -> Unit) {
+private fun FilterTile(
+    name: String,
+    matrix: ColorMatrix?,
+    thumb: ImageBitmap?,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .width(76.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(2.dp)
+    ) {
+        Box(
+            Modifier
+                .size(width = 72.dp, height = 52.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(SurfaceHigh)
+                .border(
+                    width = if (selected) 2.dp else 0.dp,
+                    color = if (selected) Accent else Color.Transparent,
+                    shape = RoundedCornerShape(8.dp)
+                )
+        ) {
+            if (thumb != null) {
+                Image(
+                    bitmap = thumb,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    colorFilter = matrix?.let { ColorFilter.colorMatrix(it) },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+        Text(
+            name,
+            fontSize = 11.sp,
+            maxLines = 1,
+            color = if (selected) Accent else MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
+@Composable
+private fun TransitionPanel(
+    clip: MediaClipEntity,
+    next: MediaClipEntity?,
+    onChange: (String, Long) -> Unit
+) {
+    val hasNext = next != null
+    val thumbA by rememberThumbnail(clip.path, clip.isVideo)
+    val thumbB by rememberThumbnail(next?.path, next?.isVideo ?: false)
     var seconds by remember(clip.id, clip.transitionMs) { mutableFloatStateOf(clip.transitionMs / 1000f) }
+    val current = Transitions.canonical(clip.transitionType)
     Text(
         if (hasNext) {
             "Plays across the cut between this clip and the next one."
@@ -1081,12 +1161,12 @@ private fun TransitionPanel(clip: MediaClipEntity, hasNext: Boolean, onChange: (
         fontSize = 12.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
-    Row(
-        modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        contentPadding = PaddingValues(vertical = 6.dp)
     ) {
-        Transitions.TYPES.forEach { (id, name) ->
-            ChipButton(name, hasNext, hasNext && clip.transitionType == id) {
+        items(Transitions.TYPES) { (id, name) ->
+            TransitionTile(name, id, hasNext && current == id, hasNext, thumbA, thumbB) {
                 onChange(id, clip.transitionMs)
             }
         }
@@ -1103,6 +1183,91 @@ private fun TransitionPanel(clip: MediaClipEntity, hasNext: Boolean, onChange: (
         enabled = hasNext && clip.transitionType != "none",
         onValueChangeFinished = { onChange(clip.transitionType, (seconds * 1000f).toLong()) }
     )
+}
+
+/** Small looping preview: first clip leaves, then the next clip arrives. */
+@Composable
+private fun TransitionTile(
+    name: String,
+    type: String,
+    selected: Boolean,
+    enabled: Boolean,
+    thumbA: ImageBitmap?,
+    thumbB: ImageBitmap?,
+    onClick: () -> Unit
+) {
+    val infinite = rememberInfiniteTransition(label = "tile")
+    val progress by infinite.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1800, easing = LinearEasing), RepeatMode.Restart),
+        label = "progress"
+    )
+    val animated = type != "none"
+    val firstHalf = progress < 0.5f
+    val adj = when {
+        !animated -> Transitions.Adjust.NONE
+        firstHalf -> Transitions.adjust(type, Transitions.ease(progress * 2f), 0f)
+        else -> Transitions.adjust(type, 0f, Transitions.ease(1f - (progress - 0.5f) * 2f))
+    }
+    val bitmap = if (!animated || firstHalf) thumbA else (thumbB ?: thumbA)
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .width(76.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(2.dp)
+    ) {
+        Box(
+            Modifier
+                .size(width = 72.dp, height = 52.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.Black)
+                .border(
+                    width = if (selected) 2.dp else 0.dp,
+                    color = if (selected) Accent else Color.Transparent,
+                    shape = RoundedCornerShape(8.dp)
+                )
+        ) {
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            translationX = adj.dx * size.width
+                            translationY = adj.dy * size.height
+                            scaleX = adj.scale
+                            scaleY = adj.scale
+                            rotationZ = adj.rotation
+                            rotationY = adj.flip
+                            cameraDistance = 12f * density
+                            alpha = adj.alpha
+                        }
+                )
+            }
+            if (adj.white > 0f) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(Color.White.copy(alpha = adj.white.coerceIn(0f, 1f)))
+                )
+            }
+        }
+        Text(
+            name,
+            fontSize = 11.sp,
+            maxLines = 1,
+            color = when {
+                selected -> Accent
+                enabled -> MaterialTheme.colorScheme.onSurface
+                else -> Color(0xFF555555)
+            }
+        )
+    }
 }
 
 @Composable

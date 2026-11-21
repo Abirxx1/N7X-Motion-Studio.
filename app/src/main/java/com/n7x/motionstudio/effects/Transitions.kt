@@ -11,15 +11,44 @@ object Transitions {
     val TYPES = listOf(
         "none" to "None",
         "fade" to "Fade",
-        "slide" to "Slide",
-        "zoom" to "Zoom",
-        "spin" to "Spin"
+        "flash" to "Flash",
+        "slideL" to "Slide left",
+        "slideR" to "Slide right",
+        "slideU" to "Slide up",
+        "slideD" to "Slide down",
+        "zoomIn" to "Zoom in",
+        "zoomOut" to "Zoom out",
+        "spin" to "Spin",
+        "flip" to "Flip"
     )
 
-    /** alpha and scale multiply the clip's own animation, dx (fraction of width) and rotation add to it. */
-    data class Adjust(val alpha: Float, val dx: Float, val scale: Float, val rotation: Float) {
+    /** Older projects used "slide" and "zoom". */
+    fun canonical(type: String): String = when (type) {
+        "slide" -> "slideL"
+        "zoom" -> "zoomIn"
+        else -> type
+    }
+
+    fun nameOf(type: String): String {
+        val id = canonical(type)
+        return TYPES.firstOrNull { it.first == id }?.second ?: id
+    }
+
+    /**
+     * alpha and scale multiply the clip's own animation, dx/dy (fractions of width/height),
+     * rotation and flip (degrees) add to it. white is a white overlay (0..1).
+     */
+    data class Adjust(
+        val alpha: Float,
+        val dx: Float,
+        val dy: Float,
+        val scale: Float,
+        val rotation: Float,
+        val flip: Float,
+        val white: Float
+    ) {
         companion object {
-            val NONE = Adjust(1f, 0f, 1f, 0f)
+            val NONE = Adjust(1f, 0f, 0f, 1f, 0f, 0f, 0f)
         }
     }
 
@@ -47,22 +76,29 @@ object Transitions {
                         type = types[i - 1]
                     }
                 }
-                return build(type, out, inn)
+                return adjust(type, out, inn)
             }
             start += dur
         }
         return Adjust.NONE
     }
 
-    private fun ease(p: Float) = Easing.EASE_IN_OUT.apply(p.coerceIn(0f, 1f))
+    fun ease(p: Float): Float = Easing.EASE_IN_OUT.apply(p.coerceIn(0f, 1f))
 
-    private fun build(type: String, out: Float, inn: Float): Adjust {
+    /** out: 0..1 while the old clip leaves, inn: 1..0 while the new clip arrives. */
+    fun adjust(type: String, out: Float, inn: Float): Adjust {
         val a = max(out, inn)
-        return when (type) {
-            "fade" -> Adjust(1f - a, 0f, 1f, 0f)
-            "slide" -> Adjust(1f, inn - out, 1f, 0f)
-            "zoom" -> Adjust(1f - a, 0f, (1f + out * 0.8f) * (1f - inn * 0.3f), 0f)
-            "spin" -> Adjust(1f - a, 0f, 1f - 0.3f * a, (out - inn) * 90f)
+        return when (canonical(type)) {
+            "fade" -> Adjust(1f - a, 0f, 0f, 1f, 0f, 0f, 0f)
+            "flash" -> Adjust(1f, 0f, 0f, 1f, 0f, 0f, a)
+            "slideL" -> Adjust(1f, inn - out, 0f, 1f, 0f, 0f, 0f)
+            "slideR" -> Adjust(1f, out - inn, 0f, 1f, 0f, 0f, 0f)
+            "slideU" -> Adjust(1f, 0f, inn - out, 1f, 0f, 0f, 0f)
+            "slideD" -> Adjust(1f, 0f, out - inn, 1f, 0f, 0f, 0f)
+            "zoomIn" -> Adjust(1f - a, 0f, 0f, (1f + out * 0.8f) * (1f - inn * 0.3f), 0f, 0f, 0f)
+            "zoomOut" -> Adjust(1f - a, 0f, 0f, (1f - out * 0.5f) * (1f + inn * 0.6f), 0f, 0f, 0f)
+            "spin" -> Adjust(1f - a, 0f, 0f, 1f - 0.3f * a, (out - inn) * 90f, 0f, 0f)
+            "flip" -> Adjust(1f, 0f, 0f, 1f, 0f, (out - inn) * 90f, 0f)
             else -> Adjust.NONE
         }
     }

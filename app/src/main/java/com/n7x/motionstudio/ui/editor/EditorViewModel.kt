@@ -5,6 +5,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.n7x.motionstudio.N7XApp
+import com.n7x.motionstudio.animation.Easing
+import com.n7x.motionstudio.animation.Keyframes
+import com.n7x.motionstudio.animation.Transform
 import com.n7x.motionstudio.data.MediaClipDao
 import com.n7x.motionstudio.data.MediaClipEntity
 import com.n7x.motionstudio.data.MediaImporter
@@ -152,8 +155,13 @@ class EditorViewModel(
                 }
                 val speed = if (clip.isVideo) clip.speed else 1f
                 val splitSource = clip.trimStartMs + (inside * speed).toLong()
-                val left = clip.copy(trimEndMs = splitSource)
-                val right = clip.copy(id = idCounter.getAndIncrement(), trimStartMs = splitSource)
+                val (leftKeys, rightKeys) = Keyframes.split(Keyframes.parse(clip.keyframes), inside)
+                val left = clip.copy(trimEndMs = splitSource, keyframes = Keyframes.toJson(leftKeys))
+                val right = clip.copy(
+                    id = idCounter.getAndIncrement(),
+                    trimStartMs = splitSource,
+                    keyframes = Keyframes.toJson(rightKeys)
+                )
                 val updated = list.toMutableList()
                 updated[index] = left
                 updated.add(index + 1, right)
@@ -191,6 +199,37 @@ class EditorViewModel(
         val value = volume.coerceIn(0f, 1f)
         if (value == list[index].volume) return
         commit(list.toMutableList().also { it[index] = list[index].copy(volume = value) })
+    }
+
+    // ---------- keyframes (times are ms from the start of the clip on the timeline) ----------
+
+    private fun editKeyframes(clipId: Long, change: (MediaClipEntity, List<com.n7x.motionstudio.animation.Keyframe>) -> List<com.n7x.motionstudio.animation.Keyframe>) {
+        val list = _clips.value
+        val index = list.indexOfFirst { it.id == clipId }
+        if (index < 0) return
+        val clip = list[index]
+        val updated = change(clip, Keyframes.parse(clip.keyframes))
+        val json = Keyframes.toJson(updated)
+        if (json == clip.keyframes) return
+        commit(list.toMutableList().also { it[index] = clip.copy(keyframes = json) })
+    }
+
+    fun setKeyframe(clipId: Long, localMs: Long, value: Transform) {
+        editKeyframes(clipId) { clip, keys ->
+            Keyframes.upsert(keys, localMs.coerceIn(0L, clip.timelineMs()), value)
+        }
+    }
+
+    fun deleteKeyframe(clipId: Long, localMs: Long) {
+        editKeyframes(clipId) { _, keys -> Keyframes.removeNear(keys, localMs) }
+    }
+
+    fun setEasing(clipId: Long, localMs: Long, easing: Easing) {
+        editKeyframes(clipId) { _, keys -> Keyframes.setEasing(keys, localMs, easing) }
+    }
+
+    fun clearKeyframes(clipId: Long) {
+        editKeyframes(clipId) { _, _ -> emptyList() }
     }
 
     fun clearMessage() {

@@ -32,7 +32,8 @@ data class MediaClipEntity(
     val trimStartMs: Long,
     val trimEndMs: Long,
     val speed: Float,
-    val volume: Float
+    val volume: Float,
+    val keyframes: String
 )
 
 /** Speed only applies to video. */

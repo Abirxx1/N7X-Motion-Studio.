@@ -48,7 +48,8 @@ class MediaImporter(private val context: Context) {
                         trimStartMs = 0L,
                         trimEndMs = if (isVideo) sourceMs else DEFAULT_IMAGE_MS,
                         speed = 1f,
-                        volume = 1f
+                        volume = 1f,
+                        keyframes = "[]"
                     )
                 )
             } catch (e: Exception) {

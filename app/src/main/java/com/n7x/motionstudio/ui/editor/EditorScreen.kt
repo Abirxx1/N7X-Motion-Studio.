@@ -1,6 +1,17 @@
 package com.n7x.motionstudio.ui.editor
 
 import android.net.Uri
+import android.view.LayoutInflater
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import com.n7x.motionstudio.R
+import com.n7x.motionstudio.animation.Easing
+import com.n7x.motionstudio.animation.Keyframe
+import com.n7x.motionstudio.animation.Keyframes
+import com.n7x.motionstudio.animation.Transform
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -109,7 +120,7 @@ import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
-private enum class Panel { None, Trim, Speed, Volume }
+private enum class Panel { None, Trim, Speed, Volume, Animate }
 
 @Composable
 fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
@@ -169,6 +180,8 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
     var pxPerSec by remember { mutableFloatStateOf(80f) }
     var selectedId by remember { mutableStateOf<Long?>(null) }
     var panel by remember { mutableStateOf(Panel.None) }
+    var liveTransform by remember { mutableStateOf<Transform?>(null) }
+    val keyMap = remember(clips) { clips.associate { it.id to Keyframes.parse(it.keyframes) } }
 
     // rebuild the playlist whenever the clips change
     LaunchedEffect(clips) {
@@ -198,6 +211,27 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
 
     val selected = clips.firstOrNull { it.id == selectedId }
     val activePanel = if (selected != null) panel else Panel.None
+
+    LaunchedEffect(selectedId, panel, clips) { liveTransform = null }
+
+    // position of the selected clip on the timeline
+    val selStart = selected?.let { sel -> clips.takeWhile { it.id != sel.id }.sumOf { it.timelineMs() } }
+    val localMs = if (selected != null && selStart != null) (timeMs - selStart).toLong() else 0L
+    val insideSelected = selected != null && localMs in 0L..selected.timelineMs()
+
+    // animation applied to the preview
+    val previewClip = clipAt(clips, timeMs.toLong()) ?: clips.lastOrNull()
+    val previewTransform: Transform = if (previewClip == null) {
+        Transform.IDENTITY
+    } else {
+        val start = clips.takeWhile { it.id != previewClip.id }.sumOf { it.timelineMs() }
+        val live = liveTransform
+        if (live != null && previewClip.id == selectedId) {
+            live
+        } else {
+            Keyframes.evaluate(keyMap[previewClip.id].orEmpty(), (timeMs - start).toLong())
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -239,12 +273,20 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
         ) {
             AndroidView(
                 factory = { ctx ->
-                    PlayerView(ctx).apply {
-                        useController = false
+                    (LayoutInflater.from(ctx).inflate(R.layout.player_texture, null) as PlayerView).apply {
                         player = exo
                     }
                 },
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        translationX = previewTransform.x * size.width
+                        translationY = previewTransform.y * size.height
+                        scaleX = previewTransform.scale
+                        scaleY = previewTransform.scale
+                        rotationZ = previewTransform.rotation
+                        alpha = previewTransform.opacity
+                    }
             )
             if (clips.isEmpty()) {
                 Text("Add media to start", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -299,6 +341,7 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
         // timeline
         Timeline(
             clips = clips,
+            keyMap = keyMap,
             timeMs = timeMs,
             pxPerSec = pxPerSec.coerceAtMost(maxPx),
             selectedId = selectedId,
@@ -340,12 +383,41 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
             ToolPanel(title = when (activePanel) {
                 Panel.Trim -> "Trim"
                 Panel.Speed -> "Speed"
+                Panel.Animate -> "Animate"
                 else -> "Volume"
             }, onClose = { panel = Panel.None }) {
                 when (activePanel) {
                     Panel.Trim -> TrimPanel(selected) { s, e -> viewModel.trimClip(selected.id, s, e) }
                     Panel.Speed -> SpeedPanel(selected) { v -> viewModel.setSpeed(selected.id, v) }
                     Panel.Volume -> VolumePanel(selected) { v -> viewModel.setVolume(selected.id, v) }
+                    Panel.Animate -> {
+                        val keys = keyMap[selected.id].orEmpty()
+                        AnimatePanel(
+                            keys = keys,
+                            localMs = localMs,
+                            inside = insideSelected,
+                            live = liveTransform,
+                            onLive = { liveTransform = it },
+                            onCommit = {
+                                liveTransform?.let { t -> viewModel.setKeyframe(selected.id, localMs, t) }
+                            },
+                            onToggleKey = {
+                                val here = keys.any { abs(it.timeMs - localMs) <= Keyframes.TOLERANCE_MS }
+                                if (here) {
+                                    viewModel.deleteKeyframe(selected.id, localMs)
+                                } else {
+                                    viewModel.setKeyframe(selected.id, localMs, Keyframes.evaluate(keys, localMs))
+                                }
+                            },
+                            onJump = { keyMs ->
+                                val target = (selStart ?: 0L) + keyMs
+                                timeMs = target.toFloat()
+                                seekTimeline(exo, clips, target)
+                            },
+                            onEasing = { e -> viewModel.setEasing(selected.id, localMs, e) },
+                            onClear = { viewModel.clearKeyframes(selected.id) }
+                        )
+                    }
                     Panel.None -> Unit
                 }
             }
@@ -375,6 +447,7 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
             ToolButton("Volume", selected?.isVideo == true, { panel = Panel.Volume }) { tint ->
                 Text("♪", color = tint, fontWeight = FontWeight.Bold, fontSize = 20.sp)
             }
+            ToolButton("Animate", selected != null, { panel = Panel.Animate }) { tint -> DiamondIcon(tint) }
             ToolButton("Move left", selected != null, { selected?.let { viewModel.moveClip(it.id, -1) } }) { tint ->
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = null, tint = tint)
             }
@@ -398,6 +471,7 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
 @Composable
 private fun Timeline(
     clips: List<MediaClipEntity>,
+    keyMap: Map<Long, List<Keyframe>>,
     timeMs: Float,
     pxPerSec: Float,
     selectedId: Long?,
@@ -485,7 +559,7 @@ private fun Timeline(
         ) {
             clips.forEach { clip ->
                 val widthDp = with(density) { (clip.timelineMs() * pxPerMs).toDp() }
-                ClipBlock(clip, widthDp, clip.id == selectedId)
+                ClipBlock(clip, widthDp, clip.id == selectedId, keyMap[clip.id].orEmpty(), pxPerMs)
             }
         }
 
@@ -501,7 +575,13 @@ private fun Timeline(
 }
 
 @Composable
-private fun ClipBlock(clip: MediaClipEntity, width: androidx.compose.ui.unit.Dp, selected: Boolean) {
+private fun ClipBlock(
+    clip: MediaClipEntity,
+    width: androidx.compose.ui.unit.Dp,
+    selected: Boolean,
+    keys: List<Keyframe>,
+    pxPerMs: Float
+) {
     val bitmap by rememberThumbnail(clip.path, clip.isVideo)
     Box(Modifier.width(width).height(64.dp)) {
         Box(
@@ -524,6 +604,26 @@ private fun ClipBlock(clip: MediaClipEntity, width: androidx.compose.ui.unit.Dp,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
                 )
+            }
+            if (keys.isNotEmpty()) {
+                Canvas(Modifier.fillMaxSize()) {
+                    val r = 5.dp.toPx()
+                    keys.forEach { k ->
+                        val cx = k.timeMs * pxPerMs
+                        if (cx in 0f..size.width) {
+                            val cy = size.height * 0.5f
+                            val path = Path().apply {
+                                moveTo(cx, cy - r)
+                                lineTo(cx + r, cy)
+                                lineTo(cx, cy + r)
+                                lineTo(cx - r, cy)
+                                close()
+                            }
+                            drawPath(path, Accent)
+                            drawPath(path, Color.Black, style = Stroke(1.dp.toPx()))
+                        }
+                    }
+                }
             }
             if (width > 56.dp) {
                 Text(
@@ -567,7 +667,7 @@ private fun ToolPanel(title: String, onClose: () -> Unit, content: @Composable (
             Text(title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             TextButton(onClick = onClose) { Text("Done") }
         }
-        content()
+        Column(Modifier.heightIn(max = 210.dp).verticalScroll(rememberScrollState())) { content() }
     }
 }
 
@@ -659,6 +759,185 @@ private fun VolumePanel(clip: MediaClipEntity, onCommit: (Float) -> Unit) {
         valueRange = 0f..1f,
         onValueChangeFinished = { onCommit(volume) }
     )
+}
+
+@Composable
+private fun ChipButton(text: String, enabled: Boolean = true, highlighted: Boolean = false, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (highlighted) Accent else SurfaceHigh)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp)
+    ) {
+        Text(
+            text,
+            fontSize = 13.sp,
+            color = when {
+                highlighted -> Color.Black
+                enabled -> MaterialTheme.colorScheme.onSurface
+                else -> Color(0xFF555555)
+            }
+        )
+    }
+}
+
+@Composable
+private fun PropertySlider(
+    label: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    enabled: Boolean,
+    display: String,
+    onChange: (Float) -> Unit,
+    onFinish: () -> Unit
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, fontSize = 12.sp, modifier = Modifier.width(74.dp))
+        Slider(
+            value = value.coerceIn(range.start, range.endInclusive),
+            onValueChange = onChange,
+            onValueChangeFinished = onFinish,
+            valueRange = range,
+            enabled = enabled,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            display,
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(52.dp)
+        )
+    }
+}
+
+@Composable
+private fun AnimatePanel(
+    keys: List<Keyframe>,
+    localMs: Long,
+    inside: Boolean,
+    live: Transform?,
+    onLive: (Transform?) -> Unit,
+    onCommit: () -> Unit,
+    onToggleKey: () -> Unit,
+    onJump: (Long) -> Unit,
+    onEasing: (Easing) -> Unit,
+    onClear: () -> Unit
+) {
+    val tol = Keyframes.TOLERANCE_MS
+    val current = live ?: Keyframes.evaluate(keys, localMs)
+    val keyHere = keys.any { abs(it.timeMs - localMs) <= tol }
+    val prevKey = keys.lastOrNull { it.timeMs < localMs - tol }
+    val nextKey = keys.firstOrNull { it.timeMs > localMs + tol }
+
+    Text(
+        if (inside) {
+            "Clip time ${formatSeconds(localMs)}  •  ${keys.size} keyframe(s)"
+        } else {
+            "Move the playhead inside the selected clip to animate it."
+        },
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        ChipButton("◀ Key", prevKey != null) { prevKey?.let { onJump(it.timeMs) } }
+        ChipButton(if (keyHere) "Remove key" else "Add key", inside, keyHere) { onToggleKey() }
+        ChipButton("Key ▶", nextKey != null) { nextKey?.let { onJump(it.timeMs) } }
+        ChipButton("Clear all", keys.isNotEmpty()) { onClear() }
+    }
+
+    PropertySlider("Position X", current.x, -1f..1f, inside, "${(current.x * 100).roundToInt()}%",
+        { onLive(current.copy(x = it)) }, onCommit)
+    PropertySlider("Position Y", current.y, -1f..1f, inside, "${(current.y * 100).roundToInt()}%",
+        { onLive(current.copy(y = it)) }, onCommit)
+    PropertySlider("Scale", current.scale, 0.1f..4f, inside, "${(current.scale * 100).roundToInt()}%",
+        { onLive(current.copy(scale = it)) }, onCommit)
+    PropertySlider("Rotation", current.rotation, -360f..360f, inside, "${current.rotation.roundToInt()}°",
+        { onLive(current.copy(rotation = it)) }, onCommit)
+    PropertySlider("Opacity", current.opacity, 0f..1f, inside, "${(current.opacity * 100).roundToInt()}%",
+        { onLive(current.copy(opacity = it)) }, onCommit)
+
+    val active = keys.lastOrNull { it.timeMs <= localMs + tol } ?: keys.firstOrNull()
+    if (active != null) {
+        var custom by remember(active.timeMs, active.easing) { mutableStateOf(active.easing) }
+        var showCustom by remember { mutableStateOf(false) }
+        Text(
+            "Easing from the keyframe at ${formatSeconds(active.timeMs)} to the next one",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp)
+        )
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Easing.PRESETS.forEach { (name, easing) ->
+                ChipButton(name, true, !showCustom && active.easing == easing) {
+                    showCustom = false
+                    onEasing(easing)
+                }
+            }
+            ChipButton("Custom", true, showCustom) { showCustom = !showCustom }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            EasingCurve(if (showCustom) custom else active.easing)
+            if (showCustom) {
+                Column(Modifier.weight(1f).padding(start = 8.dp)) {
+                    PropertySlider("Start X", custom.x1, 0f..1f, true, String.format(Locale.US, "%.2f", custom.x1),
+                        { custom = custom.copy(x1 = it) }, { onEasing(custom) })
+                    PropertySlider("Start Y", custom.y1, -1f..2f, true, String.format(Locale.US, "%.2f", custom.y1),
+                        { custom = custom.copy(y1 = it) }, { onEasing(custom) })
+                    PropertySlider("End X", custom.x2, 0f..1f, true, String.format(Locale.US, "%.2f", custom.x2),
+                        { custom = custom.copy(x2 = it) }, { onEasing(custom) })
+                    PropertySlider("End Y", custom.y2, -1f..2f, true, String.format(Locale.US, "%.2f", custom.y2),
+                        { custom = custom.copy(y2 = it) }, { onEasing(custom) })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EasingCurve(easing: Easing) {
+    Canvas(
+        Modifier
+            .size(84.dp)
+            .clipToBounds()
+            .background(Color(0xFF0B0B0E))
+    ) {
+        val w = size.width
+        val h = size.height
+        val pad = 10.dp.toPx()
+        val boxW = w - 2 * pad
+        val boxH = h - 2 * pad
+        drawLine(Color(0xFF333340), Offset(pad, h - pad), Offset(w - pad, pad), 1.dp.toPx())
+        var previous: Offset? = null
+        for (i in 0..40) {
+            val p = i / 40f
+            val point = Offset(pad + p * boxW, h - pad - easing.apply(p) * boxH)
+            previous?.let { drawLine(Accent, it, point, 2.dp.toPx()) }
+            previous = point
+        }
+    }
+}
+
+@Composable
+private fun DiamondIcon(tint: Color) {
+    Canvas(Modifier.size(24.dp)) {
+        val c = size.width / 2f
+        val r = size.width * 0.42f
+        val path = Path().apply {
+            moveTo(c, c - r)
+            lineTo(c + r, c)
+            lineTo(c, c + r)
+            lineTo(c - r, c)
+            close()
+        }
+        drawPath(path, tint)
+    }
 }
 
 @Composable

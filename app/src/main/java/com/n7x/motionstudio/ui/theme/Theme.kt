@@ -1,8 +1,11 @@
 package com.n7x.motionstudio.ui.theme
 
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 
 val Amoled = Color(0xFF000000)
@@ -24,5 +27,11 @@ private val N7XColors = darkColorScheme(
 
 @Composable
 fun N7XTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = N7XColors, content = content)
+    MaterialTheme(colorScheme = N7XColors) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background,
+            content = content
+        )
+    }
 }

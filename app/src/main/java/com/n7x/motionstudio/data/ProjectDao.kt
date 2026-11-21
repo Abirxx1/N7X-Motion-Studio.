@@ -7,14 +7,26 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ProjectDao {
-    @Query("SELECT * FROM projects ORDER BY updatedAt DESC")
-    fun observeAll(): Flow<List<ProjectEntity>>
+    @Query(
+        """
+        SELECT p.*,
+        (SELECT COUNT(*) FROM media_clips WHERE projectId = p.id) AS clipCount,
+        (SELECT COALESCE(SUM(durationMs), 0) FROM media_clips WHERE projectId = p.id) AS totalMs,
+        (SELECT path FROM media_clips WHERE projectId = p.id ORDER BY position LIMIT 1) AS coverPath,
+        (SELECT isVideo FROM media_clips WHERE projectId = p.id ORDER BY position LIMIT 1) AS coverIsVideo
+        FROM projects p ORDER BY p.updatedAt DESC
+        """
+    )
+    fun observeWithStats(): Flow<List<ProjectWithStats>>
 
     @Query("SELECT * FROM projects WHERE id = :id")
     suspend fun getById(id: Long): ProjectEntity?
 
     @Insert
     suspend fun insert(project: ProjectEntity): Long
+
+    @Query("UPDATE projects SET updatedAt = :time WHERE id = :id")
+    suspend fun touch(id: Long, time: Long)
 
     @Query("DELETE FROM projects WHERE id = :id")
     suspend fun delete(id: Long)

@@ -11,10 +11,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val dao = (application as N7XApp).database.projectDao()
+        val app = application as N7XApp
         setContent {
             N7XTheme {
-                N7XNavGraph(dao)
+                N7XNavGraph(app)
             }
         }
     }

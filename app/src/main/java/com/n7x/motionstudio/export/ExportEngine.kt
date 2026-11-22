@@ -23,6 +23,8 @@ import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.Effects
 import com.google.common.collect.ImmutableList
+import com.n7x.motionstudio.animation.Keyframes
+import com.n7x.motionstudio.animation.TextAnimations
 import com.n7x.motionstudio.data.AudioEntity
 import com.n7x.motionstudio.data.MediaClipEntity
 import com.n7x.motionstudio.data.OverlayEntity
@@ -32,14 +34,16 @@ import com.n7x.motionstudio.data.timelineMs
 import com.n7x.motionstudio.effects.ColorOps
 import com.n7x.motionstudio.effects.CubeLut
 import java.io.File
+import java.util.Locale
+import kotlin.math.ceil
 
 /**
  * Turns the project (clips, text, stickers, music) into a Media3 Composition.
- * Not included yet: keyframe animation, transitions and text animations.
+ * Keyframes, transitions and text animations use the same functions as the preview.
  */
 class ExportEngine(private val context: Context) {
 
-    class Prepared(val composition: Composition, val tempFiles: List<File>)
+    class Prepared(val composition: Composition, val tempFiles: List<File>, val plan: String)
 
     fun prepare(
         settings: ExportSettings,
@@ -56,17 +60,52 @@ class ExportEngine(private val context: Context) {
         val sequences = mutableListOf<EditedMediaItemSequence>()
         sequences.add(EditedMediaItemSequence(clips.map { videoItem(it, settings, outW, outH) }))
         for (audio in audios) {
-            audioSequence(audio, totalMs, workDir, temp)?.let { sequences.add(it) }
+            audioSequence(audio, settings, totalMs, workDir, temp)?.let { sequences.add(it) }
         }
 
+        // effects on the finished timeline: motion and transitions first, then text on top
+        val frameEffects = mutableListOf<Effect>()
+        val motion = TimelineMotion(clips)
+        if (motion.needed) {
+            frameEffects.add(MotionTransformation(motion, outW.toFloat() / outH.toFloat()))
+            frameEffects.add(MotionColor(motion))
+        }
         val overlayList = overlays.mapNotNull { overlayFor(it, outW, outH, totalMs) }
-        val builder = Composition.Builder(sequences)
         if (overlayList.isNotEmpty()) {
-            builder.setEffects(
-                Effects(emptyList(), listOf<Effect>(OverlayEffect(ImmutableList.copyOf(overlayList))))
+            frameEffects.add(OverlayEffect(ImmutableList.copyOf(overlayList)))
+        }
+        val builder = Composition.Builder(sequences)
+        if (frameEffects.isNotEmpty()) builder.setEffects(Effects(emptyList(), frameEffects))
+        return Prepared(builder.build(), temp, describe(settings, clips, overlays, audios))
+    }
+
+    /** A short description of what is exported. It is copied into error reports. */
+    private fun describe(
+        settings: ExportSettings,
+        clips: List<MediaClipEntity>,
+        overlays: List<OverlayEntity>,
+        audios: List<AudioEntity>
+    ): String = buildString {
+        appendLine(
+            "Output ${settings.width}x${settings.height} " +
+                "${if (settings.h265) "H.265" else "H.264"} " +
+                "fps=${if (settings.fps == 0) "source" else settings.fps} " +
+                "bitrate=${String.format(Locale.US, "%.1f", settings.videoMbps())}Mbps safeMode=${settings.safeMode}"
+        )
+        clips.forEachIndexed { i, c ->
+            appendLine(
+                "clip $i: ${if (c.isVideo) "video" else "photo"} trim=${c.trimStartMs}-${c.trimEndMs}ms " +
+                    "speed=${c.speed} volume=${c.volume} look=${c.filterId} lut=${c.lutPath.isNotEmpty()} " +
+                    "transition=${c.transitionType}/${c.transitionMs}ms keyframes=${Keyframes.parse(c.keyframes).size}"
             )
         }
-        return Prepared(builder.build(), temp)
+        audios.forEachIndexed { i, a ->
+            appendLine(
+                "audio $i: start=${a.startMs}ms trim=${a.trimStartMs}-${a.trimEndMs}ms " +
+                    "source=${a.sourceMs}ms volume=${a.volume} file=${File(a.path).name}"
+            )
+        }
+        appendLine("text/sticker layers: ${overlays.size}")
     }
 
     private fun videoItem(clip: MediaClipEntity, s: ExportSettings, w: Int, h: Int): EditedMediaItem {
@@ -86,12 +125,15 @@ class ExportEngine(private val context: Context) {
 
         val video = mutableListOf<Effect>()
         val audio = mutableListOf<AudioProcessor>()
+        val changedSpeed = clip.isVideo && clip.speed != 1f
 
-        if (clip.isVideo && clip.speed != 1f) {
+        if (changedSpeed) {
             video.add(SpeedChangeEffect(clip.speed))
-            val sonic = SonicAudioProcessor()
-            sonic.setSpeed(clip.speed)
-            audio.add(sonic)
+            if (!s.safeMode) {
+                val sonic = SonicAudioProcessor()
+                sonic.setSpeed(clip.speed)
+                audio.add(sonic)
+            }
         }
         ColorOps.build(clip.filterId, clip.brightness, clip.contrast, clip.saturation)?.let {
             video.add(ColorMatrixEffect(it))
@@ -104,10 +146,14 @@ class ExportEngine(private val context: Context) {
             }
         }
         video.add(Presentation.createForWidthAndHeight(w, h, Presentation.LAYOUT_SCALE_TO_FIT))
-        if (s.fps > 0) video.add(FrameDropEffect.createDefaultFrameDropEffect(s.fps.toFloat()))
-        if (clip.isVideo && clip.volume != 1f) audio.add(volumeProcessor(clip.volume))
+        if (s.fps > 0 && !s.safeMode) {
+            video.add(FrameDropEffect.createDefaultFrameDropEffect(s.fps.toFloat()))
+        }
+        if (clip.isVideo && clip.volume != 1f && !s.safeMode) audio.add(volumeProcessor(clip.volume))
 
         val item = EditedMediaItem.Builder(mediaItem).setEffects(Effects(audio, video))
+        // safe mode: a clip with changed speed loses its sound instead of risking a failed export
+        if (s.safeMode && changedSpeed) item.setRemoveAudio(true)
         if (!clip.isVideo) {
             item.setDurationUs((clip.trimEndMs - clip.trimStartMs) * 1000L).setFrameRate(30)
         }
@@ -116,6 +162,7 @@ class ExportEngine(private val context: Context) {
 
     private fun audioSequence(
         audio: AudioEntity,
+        s: ExportSettings,
         totalMs: Long,
         workDir: File,
         temp: MutableList<File>
@@ -139,21 +186,26 @@ class ExportEngine(private val context: Context) {
                     .build()
             )
             .build()
+        val processors = if (s.safeMode || audio.volume == 1f) {
+            emptyList<AudioProcessor>()
+        } else {
+            listOf(volumeProcessor(audio.volume))
+        }
         items.add(
             EditedMediaItem.Builder(clip)
                 .setRemoveVideo(true)
-                .setEffects(Effects(listOf<AudioProcessor>(volumeProcessor(audio.volume)), emptyList<Effect>()))
+                .setEffects(Effects(processors, emptyList<Effect>()))
                 .build()
         )
         return EditedMediaItemSequence(items)
     }
 
     private fun overlayFor(layer: OverlayEntity, w: Int, h: Int, totalMs: Long): TextureOverlay? {
-        val bitmap = OverlayRenderer.render(layer, w, h) ?: return null
+        val full = OverlayRenderer.render(layer, w, h) ?: return null
         val startUs = layer.startMs * 1000L
         val endUs = minOf(layer.endMs, totalMs) * 1000L
         if (startUs >= endUs) return null
-        return LayerOverlay(bitmap, startUs, endUs, 2f * layer.x, -2f * layer.y, -layer.rotation, layer.opacity)
+        return AnimatedOverlay(layer, w, h, full, startUs, endUs)
     }
 
     private fun volumeProcessor(volume: Float): AudioProcessor {
@@ -176,24 +228,47 @@ class ExportEngine(private val context: Context) {
         override fun getMatrix(presentationTimeUs: Long, useHdr: Boolean): FloatArray = glMatrix
     }
 
-    /** A text or sticker bitmap that is visible between startUs and endUs. */
-    private class LayerOverlay(
-        private val bitmap: Bitmap,
+    /**
+     * A text or sticker layer with its start, stop and overall animation.
+     * The animation values come from TextAnimations, the same code the preview uses.
+     */
+    private class AnimatedOverlay(
+        private val layer: OverlayEntity,
+        private val outW: Int,
+        private val outH: Int,
+        private val fullBitmap: Bitmap,
         private val startUs: Long,
-        private val endUs: Long,
-        private val anchorX: Float,
-        private val anchorY: Float,
-        private val rotation: Float,
-        private val opacity: Float
+        private val endUs: Long
     ) : BitmapOverlay() {
-        override fun getBitmap(presentationTimeUs: Long): Bitmap = bitmap
+        private var current: Bitmap = fullBitmap
+        private var shownCount = -1
+
+        private fun animation(presentationTimeUs: Long) =
+            TextAnimations.evaluate(layer, (presentationTimeUs - startUs) / 1000L)
+
+        override fun getBitmap(presentationTimeUs: Long): Bitmap {
+            val a = animation(presentationTimeUs)
+            if (layer.kind == "text" && a.reveal < 1f) {
+                val count = ceil(layer.text.length * a.reveal).toInt().coerceIn(0, layer.text.length)
+                if (count != shownCount) {
+                    current = OverlayRenderer.render(layer, outW, outH, count) ?: fullBitmap
+                    shownCount = count
+                }
+            } else if (shownCount != -1) {
+                current = fullBitmap
+                shownCount = -1
+            }
+            return current
+        }
 
         override fun getOverlaySettings(presentationTimeUs: Long): OverlaySettings {
             val visible = presentationTimeUs in startUs until endUs
+            val a = animation(presentationTimeUs)
             return OverlaySettings.Builder()
-                .setBackgroundFrameAnchor(anchorX, anchorY)
-                .setRotationDegrees(rotation)
-                .setAlphaScale(if (visible) opacity else 0f)
+                .setBackgroundFrameAnchor(2f * (layer.x + a.dx), -2f * (layer.y + a.dy))
+                .setRotationDegrees(-(layer.rotation + a.rotation))
+                .setScale(a.scale, a.scale)
+                .setAlphaScale(if (visible) (layer.opacity * a.alpha).coerceIn(0f, 1f) else 0f)
                 .build()
         }
     }

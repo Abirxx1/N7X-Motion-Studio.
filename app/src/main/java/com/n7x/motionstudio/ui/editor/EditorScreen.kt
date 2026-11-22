@@ -424,6 +424,7 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                 totalMs = total,
                 onStart = { viewModel.startExport(it) },
                 onCancel = { viewModel.cancelExport() },
+                onRetrySafe = { viewModel.retryExportSafe() },
                 onClose = {
                     viewModel.resetExport()
                     showExport = false

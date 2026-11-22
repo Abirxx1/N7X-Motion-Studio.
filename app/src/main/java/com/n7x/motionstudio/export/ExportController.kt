@@ -7,6 +7,7 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.util.Log
 import android.provider.MediaStore
 import androidx.media3.common.MimeTypes
 import androidx.media3.transformer.Composition
@@ -50,7 +51,11 @@ class ExportController(private val app: Application) {
             val sizeBytes: Long,
             val durationMs: Long
         ) : State
-        data class Failed(val message: String) : State
+        data class Failed(
+            val message: String,
+            val details: String = "",
+            val canRetrySafe: Boolean = false
+        ) : State
         object Cancelled : State
     }
 
@@ -62,6 +67,16 @@ class ExportController(private val app: Application) {
     private var transformer: Transformer? = null
     private var outputFile: File? = null
     private var tempFiles: List<File> = emptyList()
+    private var plan: String = ""
+
+    private class Args(
+        val settings: ExportSettings,
+        val clips: List<MediaClipEntity>,
+        val overlays: List<OverlayEntity>,
+        val audios: List<AudioEntity>
+    )
+
+    private var lastArgs: Args? = null
 
     private val prefs get() = app.getSharedPreferences("n7x_export", android.content.Context.MODE_PRIVATE)
     private fun workDir() = File(app.cacheDir, "export")
@@ -93,6 +108,8 @@ class ExportController(private val app: Application) {
             return
         }
         this.scope = scope
+        lastArgs = Args(settings, clips, overlays, audios)
+        plan = ""
         _state.value = State.Running(0f)
         setRunning(true)
         val totalMs = clips.sumOf { it.timelineMs() }
@@ -108,12 +125,16 @@ class ExportController(private val app: Application) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                fail("Could not prepare the export: ${e.message ?: e.javaClass.simpleName}")
+                fail(
+                    "Could not prepare the export: ${e.message ?: e.javaClass.simpleName}",
+                    Log.getStackTraceString(e)
+                )
                 return@launch
             }
             val out = File(dir, "export_${System.currentTimeMillis()}.mp4")
             outputFile = out
             tempFiles = prepared.tempFiles
+            plan = prepared.plan
 
             val videoSettings = VideoEncoderSettings.Builder()
                 .setBitrate((settings.videoMbps() * 1_000_000f).toInt())
@@ -143,7 +164,8 @@ class ExportController(private val app: Application) {
                     ) {
                         fail(
                             "Export failed: ${exportException.message ?: "unknown error"} " +
-                                "(code ${exportException.errorCode})"
+                                "(code ${exportException.errorCode})",
+                            plan + "\n" + Log.getStackTraceString(exportException)
                         )
                     }
                 })
@@ -152,7 +174,10 @@ class ExportController(private val app: Application) {
             try {
                 t.start(prepared.composition, out.absolutePath)
             } catch (e: Exception) {
-                fail("Could not start the export: ${e.message ?: e.javaClass.simpleName}")
+                fail(
+                    "Could not start the export: ${e.message ?: e.javaClass.simpleName}",
+                    plan + "\n" + Log.getStackTraceString(e)
+                )
                 return@launch
             }
             val holder = ProgressHolder()
@@ -189,7 +214,10 @@ class ExportController(private val app: Application) {
                 setRunning(false)
                 _state.value = State.Done(uri?.toString() ?: "", savedAs, width, height, size, duration)
             } catch (e: Exception) {
-                fail("The video was made but could not be saved: ${e.message ?: e.javaClass.simpleName}")
+                fail(
+                    "The video was made but could not be saved: ${e.message ?: e.javaClass.simpleName}",
+                    plan + "\n" + Log.getStackTraceString(e)
+                )
             }
         }
     }
@@ -220,11 +248,19 @@ class ExportController(private val app: Application) {
         return Pair(null, dest.absolutePath)
     }
 
-    private fun fail(message: String) {
+    private fun fail(message: String, details: String = "") {
         transformer = null
         cleanup()
         setRunning(false)
-        _state.value = State.Failed(message)
+        val canRetry = lastArgs?.settings?.safeMode == false
+        _state.value = State.Failed(message, details.take(6000), canRetry)
+    }
+
+    /** Runs the last export again in safe mode. */
+    fun retrySafe(scope: CoroutineScope) {
+        val a = lastArgs ?: return
+        if (_state.value is State.Running) return
+        start(scope, a.settings.copy(safeMode = true), a.clips, a.overlays, a.audios)
     }
 
     private fun cleanup() {

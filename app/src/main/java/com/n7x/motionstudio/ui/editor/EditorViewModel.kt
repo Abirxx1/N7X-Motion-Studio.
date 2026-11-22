@@ -92,6 +92,8 @@ class EditorViewModel(
 
     fun cancelExport() = exportController.cancel()
 
+    fun retryExportSafe() = exportController.retrySafe(viewModelScope)
+
     fun resetExport() = exportController.reset()
 
     init {

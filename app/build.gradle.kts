@@ -13,8 +13,8 @@ android {
         applicationId = "com.n7x.motionstudio"
         minSdk = 28
         targetSdk = 34
-        versionCode = 14
-        versionName = "0.7.1"
+        versionCode = 15
+        versionName = "0.8.0"
     }
 
     signingConfigs {

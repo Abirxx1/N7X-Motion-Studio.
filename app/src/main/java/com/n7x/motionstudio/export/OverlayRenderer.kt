@@ -1,13 +1,17 @@
 package com.n7x.motionstudio.export
 
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.text.Layout
+import android.text.SpannableString
+import android.text.Spanned
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.text.style.ForegroundColorSpan
 import com.n7x.motionstudio.data.OverlayEntity
 import kotlin.math.ceil
 
@@ -46,8 +50,16 @@ object OverlayRenderer {
         return Typeface.create(base, style)
     }
 
-    fun render(layer: OverlayEntity, outW: Int, outH: Int): Bitmap? {
+    /** revealCount: how many letters are visible (typewriter). -1 shows everything. */
+    fun render(layer: OverlayEntity, outW: Int, outH: Int, revealCount: Int = -1): Bitmap? {
         if (layer.text.isBlank()) return null
+        val content: CharSequence = if (revealCount in 0 until layer.text.length) {
+            SpannableString(layer.text).apply {
+                setSpan(ForegroundColorSpan(Color.TRANSPARENT), revealCount, layer.text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        } else {
+            layer.text
+        }
         val size = layer.size * outH
         val face = resolveTypeface(layer)
         val fill = TextPaint(Paint.ANTI_ALIAS_FLAG)
@@ -62,14 +74,14 @@ object OverlayRenderer {
         val strokeWidth = if (layer.outlineWidth > 0f) size * 0.18f * layer.outlineWidth else 0f
 
         val maxWidth = (outW * 0.92f).toInt()
-        val measure = StaticLayout.Builder.obtain(layer.text, 0, layer.text.length, fill, maxWidth)
+        val measure = StaticLayout.Builder.obtain(content, 0, content.length, fill, maxWidth)
             .setAlignment(Layout.Alignment.ALIGN_CENTER)
             .build()
         var lineWidth = 0f
         for (i in 0 until measure.lineCount) lineWidth = maxOf(lineWidth, measure.getLineWidth(i))
         val layoutWidth = minOf(maxWidth, ceil(lineWidth).toInt() + 2)
 
-        val fillLayout = StaticLayout.Builder.obtain(layer.text, 0, layer.text.length, fill, layoutWidth)
+        val fillLayout = StaticLayout.Builder.obtain(content, 0, content.length, fill, layoutWidth)
             .setAlignment(Layout.Alignment.ALIGN_CENTER)
             .build()
         val strokeLayout = if (strokeWidth > 0f) {
@@ -79,7 +91,7 @@ object OverlayRenderer {
             stroke.strokeWidth = strokeWidth
             stroke.strokeJoin = Paint.Join.ROUND
             stroke.color = layer.outlineColor
-            StaticLayout.Builder.obtain(layer.text, 0, layer.text.length, stroke, layoutWidth)
+            StaticLayout.Builder.obtain(content, 0, content.length, stroke, layoutWidth)
                 .setAlignment(Layout.Alignment.ALIGN_CENTER)
                 .build()
         } else {

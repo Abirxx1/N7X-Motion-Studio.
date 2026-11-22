@@ -38,7 +38,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -65,6 +67,7 @@ fun ExportDialog(
     totalMs: Long,
     onStart: (ExportSettings) -> Unit,
     onCancel: () -> Unit,
+    onRetrySafe: () -> Unit,
     onClose: () -> Unit
 ) {
     val running = state is ExportController.State.Running
@@ -108,12 +111,7 @@ fun ExportDialog(
                     is ExportController.State.Idle -> SettingsForm(totalMs, onStart, onClose)
                     is ExportController.State.Running -> RunningView(state.progress, onCancel)
                     is ExportController.State.Done -> DoneView(state, onClose)
-                    is ExportController.State.Failed -> MessageView(
-                        "Export failed",
-                        state.message,
-                        Color(0xFFFF5370),
-                        onClose
-                    )
+                    is ExportController.State.Failed -> FailedView(state, onRetrySafe, onClose)
                     is ExportController.State.Cancelled -> MessageView(
                         "Export cancelled",
                         "Nothing was saved.",
@@ -232,6 +230,17 @@ private fun SettingsForm(totalMs: Long, onStart: (ExportSettings) -> Unit, onClo
             valueRange = 2f..80f
         )
     }
+    Label("Safe mode")
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ExportChip("Off", true, !settings.safeMode) { settings = settings.copy(safeMode = false) }
+        ExportChip("On", true, settings.safeMode) { settings = settings.copy(safeMode = true) }
+    }
+    Text(
+        "Use it if an export fails. Clips with changed speed lose their sound and clip/music volume is ignored.",
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 4.dp)
+    )
     Text(
         "Audio: AAC, quality chosen by the phone.",
         fontSize = 11.sp,
@@ -256,13 +265,14 @@ private fun SettingsForm(totalMs: Long, onStart: (ExportSettings) -> Unit, onClo
     }
     Spacer(Modifier.height(10.dp))
     Text(
-        "Included: clips (trim, speed, volume), photos, colour look and LUT, text and stickers " +
-            "(font, colour, outline, shadow, position, timing), music layers.",
+        "Included: clips (trim, speed, volume), photos, colour look and LUT, keyframe animation, " +
+            "transitions, text and stickers (style, position, timing, start/stop/overall animation), music layers.",
         fontSize = 11.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
     Text(
-        "Not included yet: keyframe animation, transitions, text animations.",
+        "Not included: Rainbow text colour, audio fades (not built yet). Transitions, keyframes and text " +
+            "animation in export are new: compare the result with the preview.",
         fontSize = 11.sp,
         color = Color(0xFFFFB74D),
         modifier = Modifier.padding(top = 4.dp)
@@ -363,3 +373,29 @@ private fun MessageView(title: String, message: String, color: Color, onClose: (
 private fun fmtMbps(v: Float): String = String.format(Locale.US, "%.1f Mbps", v)
 
 private fun megabytes(bytes: Long): String = String.format(Locale.US, "%.1f MB", bytes / 1_000_000f)
+
+@Composable
+private fun FailedView(state: ExportController.State.Failed, onRetrySafe: () -> Unit, onClose: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    Text("Export failed", fontWeight = FontWeight.Bold, color = Color(0xFFFF5370), fontSize = 16.sp)
+    Text(
+        state.message.take(300),
+        fontSize = 13.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 8.dp)
+    )
+    Spacer(Modifier.height(12.dp))
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (state.canRetrySafe) ExportChip("Retry in safe mode", true, true) { onRetrySafe() }
+        ExportChip("Copy details") {
+            clipboard.setText(AnnotatedString(state.message + "\n\n" + state.details))
+        }
+        ExportChip("Close") { onClose() }
+    }
+    Text(
+        "Copy details and send them to fix the problem.",
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 8.dp)
+    )
+}

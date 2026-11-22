@@ -6,8 +6,8 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [ProjectEntity::class, MediaClipEntity::class],
-    version = 5,
+    entities = [ProjectEntity::class, MediaClipEntity::class, OverlayEntity::class, AudioEntity::class],
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -62,5 +62,44 @@ val MIGRATION_4_5 = object : Migration(4, 5) {
         db.execSQL("ALTER TABLE `media_clips` ADD COLUMN `lutPath` TEXT NOT NULL DEFAULT ''")
         db.execSQL("ALTER TABLE `media_clips` ADD COLUMN `transitionType` TEXT NOT NULL DEFAULT 'none'")
         db.execSQL("ALTER TABLE `media_clips` ADD COLUMN `transitionMs` INTEGER NOT NULL DEFAULT 600")
+    }
+}
+
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `overlays` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`projectId` INTEGER NOT NULL, " +
+                "`kind` TEXT NOT NULL, " +
+                "`text` TEXT NOT NULL, " +
+                "`startMs` INTEGER NOT NULL, " +
+                "`durationMs` INTEGER NOT NULL, " +
+                "`x` REAL NOT NULL, " +
+                "`y` REAL NOT NULL, " +
+                "`size` REAL NOT NULL, " +
+                "`rotation` REAL NOT NULL, " +
+                "`colorArgb` INTEGER NOT NULL, " +
+                "`bold` INTEGER NOT NULL, " +
+                "`box` INTEGER NOT NULL, " +
+                "FOREIGN KEY(`projectId`) REFERENCES `projects`(`id`) " +
+                "ON UPDATE NO ACTION ON DELETE CASCADE)"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_overlays_projectId` ON `overlays` (`projectId`)")
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `audio_tracks` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`projectId` INTEGER NOT NULL, " +
+                "`path` TEXT NOT NULL, " +
+                "`name` TEXT NOT NULL, " +
+                "`sourceMs` INTEGER NOT NULL, " +
+                "`startMs` INTEGER NOT NULL, " +
+                "`trimStartMs` INTEGER NOT NULL, " +
+                "`trimEndMs` INTEGER NOT NULL, " +
+                "`volume` REAL NOT NULL, " +
+                "FOREIGN KEY(`projectId`) REFERENCES `projects`(`id`) " +
+                "ON UPDATE NO ACTION ON DELETE CASCADE)"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_audio_tracks_projectId` ON `audio_tracks` (`projectId`)")
     }
 }

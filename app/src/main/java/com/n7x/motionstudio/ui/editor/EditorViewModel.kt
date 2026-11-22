@@ -8,7 +8,10 @@ import com.n7x.motionstudio.N7XApp
 import com.n7x.motionstudio.animation.Easing
 import com.n7x.motionstudio.animation.Keyframes
 import com.n7x.motionstudio.animation.Transform
+import com.n7x.motionstudio.data.AudioEntity
 import com.n7x.motionstudio.data.MediaClipDao
+import com.n7x.motionstudio.data.OverlayEntity
+import com.n7x.motionstudio.data.Srt
 import com.n7x.motionstudio.data.MediaClipEntity
 import com.n7x.motionstudio.data.MediaImporter
 import com.n7x.motionstudio.data.ProjectDao
@@ -28,6 +31,12 @@ import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
 
+private class EditSnapshot(
+    val clips: List<MediaClipEntity>,
+    val overlays: List<OverlayEntity>,
+    val audios: List<AudioEntity>
+)
+
 class EditorViewModel(
     private val projectDao: ProjectDao,
     private val clipDao: MediaClipDao,
@@ -42,6 +51,12 @@ class EditorViewModel(
     private val _clips = MutableStateFlow<List<MediaClipEntity>>(emptyList())
     val clips: StateFlow<List<MediaClipEntity>> = _clips
 
+    private val _overlays = MutableStateFlow<List<OverlayEntity>>(emptyList())
+    val overlays: StateFlow<List<OverlayEntity>> = _overlays
+
+    private val _audios = MutableStateFlow<List<AudioEntity>>(emptyList())
+    val audios: StateFlow<List<AudioEntity>> = _audios
+
     private val _importing = MutableStateFlow(false)
     val importing: StateFlow<Boolean> = _importing
 
@@ -54,49 +69,64 @@ class EditorViewModel(
     private val _canRedo = MutableStateFlow(false)
     val canRedo: StateFlow<Boolean> = _canRedo
 
-    private val undoStack = ArrayDeque<List<MediaClipEntity>>()
-    private val redoStack = ArrayDeque<List<MediaClipEntity>>()
+    private val undoStack = ArrayDeque<EditSnapshot>()
+    private val redoStack = ArrayDeque<EditSnapshot>()
     private val idCounter = AtomicLong(1L)
     private var loaded = false
 
     init {
         viewModelScope.launch {
             _project.value = projectDao.getById(projectId)
-            val list = saveMutex.withLock {
+            saveMutex.withLock {
                 // ids must be unique across ALL projects (the id is the table's primary key)
-                idCounter.set(clipDao.maxId() + 1L)
-                clipDao.getClips(projectId)
+                val highest = maxOf(clipDao.maxId(), clipDao.maxOverlayId(), clipDao.maxAudioId())
+                idCounter.set(highest + 1L)
+                _clips.value = clipDao.getClips(projectId)
+                _overlays.value = clipDao.getOverlays(projectId)
+                _audios.value = clipDao.getAudios(projectId)
             }
-            _clips.value = list
             loaded = true
         }
     }
 
     // ---------- history ----------
 
-    private fun commit(newList: List<MediaClipEntity>) {
+    private fun snapshot() = EditSnapshot(_clips.value, _overlays.value, _audios.value)
+
+    private fun restore(s: EditSnapshot) {
+        _clips.value = s.clips
+        _overlays.value = s.overlays
+        _audios.value = s.audios
+    }
+
+    private fun commit(
+        newClips: List<MediaClipEntity> = _clips.value,
+        newOverlays: List<OverlayEntity> = _overlays.value,
+        newAudios: List<AudioEntity> = _audios.value
+    ) {
         if (!loaded) return
-        val normalized = newList.mapIndexed { index, clip -> clip.copy(position = index) }
-        undoStack.addLast(_clips.value)
+        undoStack.addLast(snapshot())
         if (undoStack.size > MAX_HISTORY) undoStack.removeFirst()
         redoStack.clear()
-        _clips.value = normalized
+        _clips.value = newClips.mapIndexed { index, clip -> clip.copy(position = index) }
+        _overlays.value = newOverlays
+        _audios.value = newAudios
         refreshFlags()
         save()
     }
 
     fun undo() {
         if (undoStack.isEmpty()) return
-        redoStack.addLast(_clips.value)
-        _clips.value = undoStack.removeLast()
+        redoStack.addLast(snapshot())
+        restore(undoStack.removeLast())
         refreshFlags()
         save()
     }
 
     fun redo() {
         if (redoStack.isEmpty()) return
-        undoStack.addLast(_clips.value)
-        _clips.value = redoStack.removeLast()
+        undoStack.addLast(snapshot())
+        restore(redoStack.removeLast())
         refreshFlags()
         save()
     }
@@ -111,7 +141,7 @@ class EditorViewModel(
         saveScope.launch {
             try {
                 saveMutex.withLock {
-                    clipDao.replaceAll(projectId, _clips.value)
+                    clipDao.saveAll(projectId, _clips.value, _overlays.value, _audios.value)
                     projectDao.touch(projectId, System.currentTimeMillis())
                 }
             } catch (e: Exception) {
@@ -296,6 +326,123 @@ class EditorViewModel(
         }
     }
 
+    // ---------- text, stickers, subtitles ----------
+
+    private fun totalMs(): Long = _clips.value.sumOf { it.timelineMs() }
+
+    /** preset: "title", "subtitle" or "sticker". Returns the new layer's id. */
+    fun addOverlay(preset: String, text: String, atMs: Long): Long {
+        if (!loaded) return -1L
+        val total = totalMs()
+        val start = atMs.coerceIn(0L, maxOf(total - 500L, 0L))
+        val duration = minOf(3000L, maxOf(total - start, 500L))
+        val id = idCounter.getAndIncrement()
+        val layer = when (preset) {
+            "subtitle" -> OverlayEntity(
+                id = id, projectId = projectId, kind = "text", text = text,
+                startMs = start, durationMs = duration, x = 0f, y = 0.36f, size = 0.07f,
+                rotation = 0f, colorArgb = -1, bold = false, box = true
+            )
+            "sticker" -> OverlayEntity(
+                id = id, projectId = projectId, kind = "sticker", text = text,
+                startMs = start, durationMs = duration, x = 0f, y = 0f, size = 0.24f,
+                rotation = 0f, colorArgb = -1, bold = false, box = false
+            )
+            else -> OverlayEntity(
+                id = id, projectId = projectId, kind = "text", text = text,
+                startMs = start, durationMs = duration, x = 0f, y = 0f, size = 0.11f,
+                rotation = 0f, colorArgb = -1, bold = true, box = false
+            )
+        }
+        commit(newOverlays = _overlays.value + layer)
+        return id
+    }
+
+    fun updateOverlay(layer: OverlayEntity) {
+        val list = _overlays.value
+        val index = list.indexOfFirst { it.id == layer.id }
+        if (index < 0) return
+        val fixed = layer.copy(
+            startMs = layer.startMs.coerceAtLeast(0L),
+            durationMs = layer.durationMs.coerceAtLeast(200L),
+            size = layer.size.coerceIn(0.02f, 0.6f)
+        )
+        if (fixed == list[index]) return
+        commit(newOverlays = list.toMutableList().also { it[index] = fixed })
+    }
+
+    fun deleteOverlay(id: Long) {
+        commit(newOverlays = _overlays.value.filter { it.id != id })
+    }
+
+    fun importSrt(uri: Uri) {
+        viewModelScope.launch {
+            val content = importer.readText(uri)
+            val cues = if (content == null) emptyList() else Srt.parse(content).take(500)
+            if (cues.isEmpty()) {
+                _message.value = "No subtitles found in this file"
+                return@launch
+            }
+            val created = cues.map { cue ->
+                OverlayEntity(
+                    id = idCounter.getAndIncrement(), projectId = projectId, kind = "text",
+                    text = cue.text, startMs = cue.startMs,
+                    durationMs = (cue.endMs - cue.startMs).coerceAtLeast(200L),
+                    x = 0f, y = 0.36f, size = 0.07f, rotation = 0f,
+                    colorArgb = -1, bold = false, box = true
+                )
+            }
+            commit(newOverlays = _overlays.value + created)
+            _message.value = "${created.size} subtitles added"
+        }
+    }
+
+    // ---------- audio ----------
+
+    fun addAudio(uri: Uri, atMs: Long, onAdded: (Long) -> Unit) {
+        viewModelScope.launch {
+            _importing.value = true
+            val imported = importer.importAudio(projectId, uri)
+            _importing.value = false
+            if (imported == null) {
+                _message.value = "Could not read this audio file"
+                return@launch
+            }
+            val total = totalMs()
+            val start = atMs.coerceIn(0L, maxOf(total - 500L, 0L))
+            val room = if (total > 0L) maxOf(total - start, 500L) else imported.durationMs
+            val id = idCounter.getAndIncrement()
+            commit(
+                newAudios = _audios.value + AudioEntity(
+                    id = id, projectId = projectId, path = imported.file.absolutePath,
+                    name = imported.name, sourceMs = imported.durationMs, startMs = start,
+                    trimStartMs = 0L, trimEndMs = minOf(imported.durationMs, room), volume = 1f
+                )
+            )
+            onAdded(id)
+        }
+    }
+
+    fun updateAudio(audio: AudioEntity) {
+        val list = _audios.value
+        val index = list.indexOfFirst { it.id == audio.id }
+        if (index < 0) return
+        val trimStart = audio.trimStartMs.coerceIn(0L, audio.sourceMs - 100L)
+        val trimEnd = audio.trimEndMs.coerceIn(trimStart + 100L, audio.sourceMs)
+        val fixed = audio.copy(
+            startMs = audio.startMs.coerceAtLeast(0L),
+            trimStartMs = trimStart,
+            trimEndMs = trimEnd,
+            volume = audio.volume.coerceIn(0f, 1f)
+        )
+        if (fixed == list[index]) return
+        commit(newAudios = list.toMutableList().also { it[index] = fixed })
+    }
+
+    fun deleteAudio(id: Long) {
+        commit(newAudios = _audios.value.filter { it.id != id })
+    }
+
     fun clearMessage() {
         _message.value = null
     }
@@ -306,6 +453,10 @@ class EditorViewModel(
         val keep = _clips.value.map { it.path }.toSet()
         mediaDir.listFiles()?.forEach { file ->
             if (file.absolutePath !in keep) file.delete()
+        }
+        val keepAudio = _audios.value.map { it.path }.toSet()
+        mediaDir.parentFile?.let { File(it, "audio") }?.listFiles()?.forEach { file ->
+            if (file.absolutePath !in keepAudio) file.delete()
         }
         val keepLuts = _clips.value.map { it.lutPath }.toSet()
         mediaDir.parentFile?.let { File(it, "luts") }?.listFiles()?.forEach { file ->

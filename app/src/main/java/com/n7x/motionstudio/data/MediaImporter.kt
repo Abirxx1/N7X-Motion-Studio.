@@ -3,6 +3,7 @@ package com.n7x.motionstudio.data
 import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -74,6 +75,50 @@ class MediaImporter(private val context: Context) {
             val input = context.contentResolver.openInputStream(uri) ?: return@withContext null
             input.use { src -> file.outputStream().use { dst -> src.copyTo(dst) } }
             file
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    class ImportedAudio(val file: File, val name: String, val durationMs: Long)
+
+    /** Copies an audio file into the project and reads its length. */
+    suspend fun importAudio(projectId: Long, uri: Uri): ImportedAudio? = withContext(Dispatchers.IO) {
+        try {
+            val mime = context.contentResolver.getType(uri) ?: ""
+            if (mime.isNotEmpty() && !mime.startsWith("audio/") && mime != "application/ogg") {
+                return@withContext null
+            }
+            val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "m4a"
+            val dir = File(context.filesDir, "projects/$projectId/audio").apply { mkdirs() }
+            val file = File(dir, "${System.currentTimeMillis()}.$ext")
+            val input = context.contentResolver.openInputStream(uri) ?: return@withContext null
+            input.use { src -> file.outputStream().use { dst -> src.copyTo(dst) } }
+            val duration = readDuration(file)
+            if (duration <= 0L) {
+                file.delete()
+                return@withContext null
+            }
+            ImportedAudio(file, displayName(uri) ?: file.name, duration)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun displayName(uri: Uri): String? {
+        return try {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Reads a small text file (for .srt subtitles). */
+    suspend fun readText(uri: Uri): String? = withContext(Dispatchers.IO) {
+        try {
+            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            if (bytes == null || bytes.size > 2_000_000) null else String(bytes, Charsets.UTF_8)
         } catch (e: Exception) {
             null
         }

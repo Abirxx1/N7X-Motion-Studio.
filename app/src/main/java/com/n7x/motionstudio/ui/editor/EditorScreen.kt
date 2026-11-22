@@ -2,6 +2,18 @@ package com.n7x.motionstudio.ui.editor
 
 import android.net.Uri
 import android.view.LayoutInflater
+import android.content.Context
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.key
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
+import com.n7x.motionstudio.data.AudioEntity
+import com.n7x.motionstudio.data.OverlayEntity
+import com.n7x.motionstudio.data.endMs
+import com.n7x.motionstudio.data.lengthMs
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.res.painterResource
 import androidx.compose.animation.core.LinearEasing
@@ -145,7 +157,23 @@ import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
-private enum class Panel { None, Trim, Speed, Volume, Animate, Look, Transition }
+private enum class Panel { None, Trim, Speed, Volume, Animate, Look, Transition, Text, Sticker, Music }
+
+private val clipPanels = setOf(
+    Panel.Trim, Panel.Speed, Panel.Volume, Panel.Animate, Panel.Look, Panel.Transition
+)
+
+private const val LANE_ROW_DP = 26
+private const val MAX_LANE_ROWS = 3
+private val TEXT_COLORS = listOf(
+    0xFFFFFFFF, 0xFF000000, 0xFFFFEB3B, 0xFFFF5252, 0xFFFF9800, 0xFF4CAF50, 0xFF00E5FF, 0xFFFF80AB
+).map { it.toInt() }
+private val STICKERS = listOf(
+    "😀", "😂", "😍", "😎", "🥳", "😭", "😡", "🤔", "👍", "👏", "🙏", "💪",
+    "❤️", "🔥", "✨", "⭐", "🎉", "🎵", "💯", "✅", "❌", "⚡", "🌈", "☀️",
+    "🌙", "🌸", "🌹", "🍕", "🍔", "🎬", "📷", "🚀", "🏆", "👑", "💎", "🎁",
+    "🐶", "🐱", "🦋", "🌍"
+)
 
 @Composable
 fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
@@ -156,6 +184,8 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
     val message by viewModel.message.collectAsState()
     val canUndo by viewModel.canUndo.collectAsState()
     val canRedo by viewModel.canRedo.collectAsState()
+    val overlays by viewModel.overlays.collectAsState()
+    val audios by viewModel.audios.collectAsState()
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(20)
@@ -204,6 +234,9 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
     var touching by remember { mutableStateOf(false) }
     var pxPerSec by remember { mutableFloatStateOf(80f) }
     var selectedId by remember { mutableStateOf<Long?>(null) }
+    var selectedOverlayId by remember { mutableStateOf<Long?>(null) }
+    var selectedAudioId by remember { mutableStateOf<Long?>(null) }
+    var liveOverlay by remember { mutableStateOf<OverlayEntity?>(null) }
     var panel by remember { mutableStateOf(Panel.None) }
     var liveTransform by remember { mutableStateOf<Transform?>(null) }
     var liveLook by remember { mutableStateOf<Look?>(null) }
@@ -211,7 +244,23 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
         val id = selectedId
         if (uri != null && id != null) viewModel.importLut(id, uri)
     }
+    val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) {
+            viewModel.addAudio(uri, timeMs.toLong()) { id ->
+                selectedAudioId = id
+                selectedOverlayId = null
+                selectedId = null
+            }
+        }
+    }
+    val srtPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) viewModel.importSrt(uri)
+    }
     val keyMap = remember(clips) { clips.associate { it.id to Keyframes.parse(it.keyframes) } }
+
+    // audio layers play in their own players, kept in step with the timeline
+    val mixer = remember { AudioMixer(context) }
+    DisposableEffect(mixer) { onDispose { mixer.release() } }
 
     // rebuild the playlist whenever the clips change
     LaunchedEffect(clips) {
@@ -240,11 +289,30 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
     }
 
     val selected = clips.firstOrNull { it.id == selectedId }
-    val activePanel = if (selected != null) panel else Panel.None
+    val activePanel = when (panel) {
+        Panel.Text, Panel.Sticker, Panel.Music -> panel
+        else -> if (selected != null) panel else Panel.None
+    }
 
-    LaunchedEffect(selectedId, panel, clips) {
+    LaunchedEffect(overlays, audios) {
+        if (selectedOverlayId != null && overlays.none { it.id == selectedOverlayId }) selectedOverlayId = null
+        if (selectedAudioId != null && audios.none { it.id == selectedAudioId }) selectedAudioId = null
+    }
+    LaunchedEffect(isPlaying, audios) {
+        if (isPlaying) {
+            while (true) {
+                mixer.update(audios, timeMs.toLong(), true)
+                delay(60L)
+            }
+        } else {
+            mixer.update(audios, timeMs.toLong(), false)
+        }
+    }
+
+    LaunchedEffect(selectedId, selectedOverlayId, panel, clips, overlays) {
         liveTransform = null
         liveLook = null
+        liveOverlay = null
     }
 
     // position of the selected clip on the timeline
@@ -317,7 +385,7 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
         }
 
         // preview
-        Box(
+        BoxWithConstraints(
             modifier = Modifier
                 .padding(horizontal = 16.dp)
                 .fillMaxWidth()
@@ -364,6 +432,37 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                         .fillMaxSize()
                         .background(Color.White.copy(alpha = adjust.white.coerceIn(0f, 1f)))
                 )
+            }
+            val previewDensity = LocalDensity.current
+            val boxWidthPx = with(previewDensity) { maxWidth.toPx() }
+            val boxHeightPx = with(previewDensity) { maxHeight.toPx() }
+            val nowMs = timeMs.toLong()
+            val shownOverlays = liveOverlay?.let { l -> overlays.map { if (it.id == l.id) l else it } } ?: overlays
+            shownOverlays.forEach { layer ->
+                if (nowMs >= layer.startMs && nowMs < layer.endMs) {
+                    key(layer.id) {
+                        OverlayView(
+                            layer = layer,
+                            boxWidth = maxWidth,
+                            widthPx = boxWidthPx,
+                            heightPx = boxHeightPx,
+                            selected = layer.id == selectedOverlayId,
+                            onClick = {
+                                selectedOverlayId = layer.id
+                                selectedId = null
+                                selectedAudioId = null
+                            },
+                            onDrag = { dx, dy ->
+                                val base = liveOverlay ?: layer
+                                liveOverlay = base.copy(
+                                    x = base.x + dx / boxWidthPx,
+                                    y = base.y + dy / boxHeightPx
+                                )
+                            },
+                            onDragEnd = { liveOverlay?.let { viewModel.updateOverlay(it) } }
+                        )
+                    }
+                }
             }
             if (clips.isEmpty()) {
                 Text("Add media to start", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -419,6 +518,10 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
         Timeline(
             clips = clips,
             keyMap = keyMap,
+            overlays = overlays,
+            audios = audios,
+            selectedOverlayId = selectedOverlayId,
+            selectedAudioId = selectedAudioId,
             timeMs = timeMs,
             pxPerSec = pxPerSec.coerceAtMost(maxPx),
             selectedId = selectedId,
@@ -435,10 +538,14 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                 touching = down
                 if (down) exo.pause()
             },
-            onTapTime = { t -> selectedId = clipAt(clips, t.toLong())?.id }
+            onSelect = { kind, id ->
+                selectedId = if (kind == 0) id else null
+                selectedOverlayId = if (kind == 1) id else null
+                selectedAudioId = if (kind == 2) id else null
+            }
         )
         Text(
-            "Drag to scrub  •  Pinch to zoom  •  Tap a clip to select",
+            "Drag to scrub  •  Pinch to zoom  •  Tap a clip, text or audio block to select",
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
@@ -456,7 +563,7 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
         Spacer(Modifier.weight(1f))
 
         // tool panel
-        if (selected != null && activePanel != Panel.None) {
+        if (selected != null && activePanel in clipPanels) {
             ToolPanel(title = when (activePanel) {
                 Panel.Trim -> "Trim"
                 Panel.Speed -> "Speed"
@@ -511,7 +618,130 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                         next = clips.getOrNull(clips.indexOfFirst { it.id == selected.id } + 1),
                         onChange = { type, ms -> viewModel.setTransition(selected.id, type, ms) }
                     )
-                    Panel.None -> Unit
+                    Panel.None, Panel.Text, Panel.Sticker, Panel.Music -> Unit
+                }
+            }
+        }
+
+        // text, sticker and music panels
+        if (activePanel == Panel.Text || activePanel == Panel.Sticker || activePanel == Panel.Music) {
+            val layer = overlays.firstOrNull { it.id == selectedOverlayId }
+            val audio = audios.firstOrNull { it.id == selectedAudioId }
+            val selectLayer = { id: Long ->
+                selectedOverlayId = id
+                selectedId = null
+                selectedAudioId = null
+            }
+            ToolPanel(
+                title = when (activePanel) {
+                    Panel.Text -> "Text"
+                    Panel.Sticker -> "Stickers"
+                    else -> "Music"
+                },
+                onClose = { panel = Panel.None }
+            ) {
+                when (activePanel) {
+                    Panel.Text -> {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ChipButton("+ Title") {
+                                val id = viewModel.addOverlay("title", "Your text", timeMs.toLong())
+                                if (id > 0) selectLayer(id)
+                            }
+                            ChipButton("+ Subtitle") {
+                                val id = viewModel.addOverlay("subtitle", "Subtitle", timeMs.toLong())
+                                if (id > 0) selectLayer(id)
+                            }
+                            ChipButton("Import .srt") { srtPicker.launch(arrayOf("*/*")) }
+                        }
+                        if (layer != null && layer.kind == "text") {
+                            TextEditor(layer, { liveOverlay = it }, { viewModel.updateOverlay(it) })
+                            OverlayControls(
+                                layer = layer,
+                                live = liveOverlay,
+                                isText = true,
+                                playheadMs = timeMs.toLong(),
+                                onLive = { liveOverlay = it },
+                                onCommit = { liveOverlay?.let { viewModel.updateOverlay(it) } },
+                                onUpdate = { viewModel.updateOverlay(it) },
+                                onDelete = {
+                                    viewModel.deleteOverlay(layer.id)
+                                    selectedOverlayId = null
+                                },
+                                onJump = { ms ->
+                                    timeMs = ms.toFloat()
+                                    seekTimeline(exo, clips, ms)
+                                }
+                            )
+                        } else {
+                            Text(
+                                "Add a title or subtitle, or tap a text in the preview or timeline to edit it. " +
+                                    "Drag the selected text in the preview to move it.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Panel.Sticker -> {
+                        STICKERS.chunked(8).forEach { row ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                row.forEach { emoji ->
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                val id = viewModel.addOverlay("sticker", emoji, timeMs.toLong())
+                                                if (id > 0) selectLayer(id)
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) { Text(emoji, fontSize = 24.sp) }
+                                }
+                            }
+                        }
+                        if (layer != null && layer.kind == "sticker") {
+                            OverlayControls(
+                                layer = layer,
+                                live = liveOverlay,
+                                isText = false,
+                                playheadMs = timeMs.toLong(),
+                                onLive = { liveOverlay = it },
+                                onCommit = { liveOverlay?.let { viewModel.updateOverlay(it) } },
+                                onUpdate = { viewModel.updateOverlay(it) },
+                                onDelete = {
+                                    viewModel.deleteOverlay(layer.id)
+                                    selectedOverlayId = null
+                                },
+                                onJump = { ms ->
+                                    timeMs = ms.toFloat()
+                                    seekTimeline(exo, clips, ms)
+                                }
+                            )
+                        } else {
+                            Text(
+                                "Tap an emoji to add it. Tap a sticker in the preview to select it.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 6.dp)
+                            )
+                        }
+                    }
+                    else -> MusicPanel(
+                        audio = audio,
+                        playheadMs = timeMs.toLong(),
+                        onAdd = { audioPicker.launch(arrayOf("audio/*")) },
+                        onUpdate = { viewModel.updateAudio(it) },
+                        onDelete = {
+                            audio?.let { viewModel.deleteAudio(it.id) }
+                            selectedAudioId = null
+                        },
+                        onJump = { ms ->
+                            timeMs = ms.toFloat()
+                            seekTimeline(exo, clips, ms)
+                        }
+                    )
                 }
             }
         }
@@ -541,6 +771,15 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                 Text("♪", color = tint, fontWeight = FontWeight.Bold, fontSize = 20.sp)
             }
             ToolButton("Animate", selected != null, { panel = Panel.Animate }) { tint -> DiamondIcon(tint) }
+            ToolButton("Text", true, { panel = Panel.Text }) { tint ->
+                Text("T", color = tint, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+            }
+            ToolButton("Sticker", true, { panel = Panel.Sticker }) { tint ->
+                Text("☺", color = tint, fontSize = 22.sp)
+            }
+            ToolButton("Music", true, { panel = Panel.Music }) { tint ->
+                Text("♫", color = tint, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+            }
             ToolButton("Look", selected != null, { panel = Panel.Look }) { tint -> LookIcon(tint) }
             ToolButton("Transition", selected != null, { panel = Panel.Transition }) { tint -> TransitionIcon(tint) }
             ToolButton("Move left", selected != null, { selected?.let { viewModel.moveClip(it.id, -1) } }) { tint ->
@@ -549,10 +788,20 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
             ToolButton("Move right", selected != null, { selected?.let { viewModel.moveClip(it.id, 1) } }) { tint ->
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = tint)
             }
-            ToolButton("Delete", selected != null, {
-                selected?.let {
-                    viewModel.deleteClip(it.id)
-                    selectedId = null
+            ToolButton("Delete", selected != null || selectedOverlayId != null || selectedAudioId != null, {
+                when {
+                    selected != null -> {
+                        viewModel.deleteClip(selected.id)
+                        selectedId = null
+                    }
+                    selectedOverlayId != null -> {
+                        selectedOverlayId?.let { viewModel.deleteOverlay(it) }
+                        selectedOverlayId = null
+                    }
+                    selectedAudioId != null -> {
+                        selectedAudioId?.let { viewModel.deleteAudio(it) }
+                        selectedAudioId = null
+                    }
                 }
             }) { tint ->
                 Icon(Icons.Default.Delete, contentDescription = null, tint = tint)
@@ -567,13 +816,17 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
 private fun Timeline(
     clips: List<MediaClipEntity>,
     keyMap: Map<Long, List<Keyframe>>,
+    overlays: List<OverlayEntity>,
+    audios: List<AudioEntity>,
+    selectedOverlayId: Long?,
+    selectedAudioId: Long?,
     timeMs: Float,
     pxPerSec: Float,
     selectedId: Long?,
     onPan: (Float) -> Unit,
     onZoom: (Float) -> Unit,
     onTouch: (Boolean) -> Unit,
-    onTapTime: (Float) -> Unit
+    onSelect: (Int, Long?) -> Unit
 ) {
     val density = LocalDensity.current
     val measurer = rememberTextMeasurer()
@@ -582,14 +835,40 @@ private fun Timeline(
     val panCb by rememberUpdatedState(onPan)
     val zoomCb by rememberUpdatedState(onZoom)
     val touchCb by rememberUpdatedState(onTouch)
-    val tapCb by rememberUpdatedState(onTapTime)
+    val laneDp = LANE_ROW_DP.dp
+    val audioRowMap = remember(audios) { laneRows(audios.map { Triple(it.id, it.startMs, it.endMs) }) }
+    val overlayRowMap = remember(overlays) { laneRows(overlays.map { Triple(it.id, it.startMs, it.endMs) }) }
+    val audioRows = if (audios.isEmpty()) 0 else (audioRowMap.values.maxOrNull() ?: 0) + 1
+    val overlayRows = if (overlays.isEmpty()) 0 else (overlayRowMap.values.maxOrNull() ?: 0) + 1
+    val laneTop = 100.dp
+    val overlayTop = laneTop + laneDp * audioRows
+    val timelineHeight = laneTop + laneDp * (audioRows + overlayRows) + (if (audioRows + overlayRows > 0) 4.dp else 0.dp)
+
+    // a tap picks a clip, an audio block or a text/sticker block depending on the lane
+    val handleTap = { t: Float, yPx: Float ->
+        val y = with(density) { yPx.toDp() }
+        when {
+            audioRows > 0 && y >= laneTop && y < overlayTop -> {
+                val row = ((y - laneTop) / laneDp).toInt()
+                val hit = audios.lastOrNull { audioRowMap[it.id] == row && t >= it.startMs && t < it.endMs }
+                onSelect(2, hit?.id)
+            }
+            overlayRows > 0 && y >= overlayTop && y < overlayTop + laneDp * overlayRows -> {
+                val row = ((y - overlayTop) / laneDp).toInt()
+                val hit = overlays.lastOrNull { overlayRowMap[it.id] == row && t >= it.startMs && t < it.endMs }
+                onSelect(1, hit?.id)
+            }
+            else -> onSelect(0, clipAt(clips, t.toLong())?.id)
+        }
+    }
+    val tapCb by rememberUpdatedState(handleTap)
     val timeNow by rememberUpdatedState(timeMs)
     val pxPerMsNow by rememberUpdatedState(pxPerMs)
 
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
-            .height(106.dp)
+            .height(timelineHeight)
             .clipToBounds()
             .background(Color(0xFF0B0B0E))
             .pointerInput(Unit) {
@@ -612,7 +891,7 @@ private fun Timeline(
                     touchCb(false)
                     if (!multiTouch && travel < slop) {
                         val center = size.width / 2f
-                        tapCb(timeNow + (down.position.x - center) / pxPerMsNow)
+                        tapCb(timeNow + (down.position.x - center) / pxPerMsNow, down.position.y)
                     }
                 }
             }
@@ -658,6 +937,32 @@ private fun Timeline(
             }
         }
 
+        // audio and text / sticker lanes
+        audios.forEach { a ->
+            val row = audioRowMap[a.id] ?: 0
+            LaneBlock(
+                label = a.name,
+                color = Color(0xFF1F8A5B),
+                selected = a.id == selectedAudioId,
+                x = centerPx + (a.startMs - timeMs) * pxPerMs,
+                widthPx = a.lengthMs * pxPerMs,
+                y = with(density) { (laneTop + laneDp * row).toPx() },
+                viewport = widthPx
+            )
+        }
+        overlays.forEach { o ->
+            val row = overlayRowMap[o.id] ?: 0
+            LaneBlock(
+                label = o.text.replace("\n", " "),
+                color = if (o.kind == "sticker") Color(0xFFC2410C) else Color(0xFF6C4DD8),
+                selected = o.id == selectedOverlayId,
+                x = centerPx + (o.startMs - timeMs) * pxPerMs,
+                widthPx = o.durationMs * pxPerMs,
+                y = with(density) { (overlayTop + laneDp * row).toPx() },
+                viewport = widthPx
+            )
+        }
+
         // playhead
         Box(
             modifier = Modifier
@@ -666,6 +971,341 @@ private fun Timeline(
                 .fillMaxHeight()
                 .background(Color.White)
         )
+    }
+}
+
+private fun laneRows(spans: List<Triple<Long, Long, Long>>): Map<Long, Int> {
+    val rowEnds = ArrayList<Long>()
+    val result = HashMap<Long, Int>()
+    for ((id, start, end) in spans.sortedBy { it.second }) {
+        var row = rowEnds.indexOfFirst { it <= start }
+        if (row < 0) {
+            rowEnds.add(end)
+            row = rowEnds.lastIndex
+        } else {
+            rowEnds[row] = end
+        }
+        result[id] = minOf(row, MAX_LANE_ROWS - 1)
+    }
+    return result
+}
+
+@Composable
+private fun LaneBlock(
+    label: String,
+    color: Color,
+    selected: Boolean,
+    x: Float,
+    widthPx: Float,
+    y: Float,
+    viewport: Float
+) {
+    if (x + widthPx < 0f || x > viewport) return
+    val density = LocalDensity.current
+    Box(
+        modifier = Modifier
+            .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
+            .width(with(density) { widthPx.coerceIn(6f, 100_000f).toDp() })
+            .height(22.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(color)
+            .border(
+                width = if (selected) 2.dp else 0.dp,
+                color = if (selected) Accent else Color.Transparent,
+                shape = RoundedCornerShape(6.dp)
+            ),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Text(
+            label,
+            fontSize = 10.sp,
+            color = Color.White,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 4.dp)
+        )
+    }
+}
+
+/** A text or sticker layer drawn over the preview. */
+@Composable
+private fun OverlayView(
+    layer: OverlayEntity,
+    boxWidth: Dp,
+    widthPx: Float,
+    heightPx: Float,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onDrag: (Float, Float) -> Unit,
+    onDragEnd: () -> Unit
+) {
+    val dragCb by rememberUpdatedState(onDrag)
+    val endCb by rememberUpdatedState(onDragEnd)
+    val clickCb by rememberUpdatedState(onClick)
+    val fontSize = with(LocalDensity.current) { (heightPx * layer.size).toSp() }
+    val shape = RoundedCornerShape(6.dp)
+    Box(
+        modifier = Modifier
+            .offset { IntOffset((layer.x * widthPx).roundToInt(), (layer.y * heightPx).roundToInt()) }
+            .graphicsLayer { rotationZ = layer.rotation }
+            .then(if (selected) Modifier.border(1.5.dp, Accent, shape) else Modifier)
+            .pointerInput(Unit) { detectTapGestures { clickCb() } }
+            .then(
+                if (selected) {
+                    Modifier.pointerInput(Unit) {
+                        detectDragGestures(
+                            onDragEnd = { endCb() },
+                            onDragCancel = { endCb() }
+                        ) { change, drag ->
+                            change.consume()
+                            dragCb(drag.x, drag.y)
+                        }
+                    }
+                } else {
+                    Modifier
+                }
+            )
+    ) {
+        Text(
+            text = layer.text,
+            color = Color(layer.colorArgb),
+            fontSize = fontSize,
+            fontWeight = if (layer.bold) FontWeight.Bold else FontWeight.Normal,
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .widthIn(max = boxWidth * 0.92f)
+                .then(
+                    if (layer.box) {
+                        Modifier.background(Color(0x99000000), shape).padding(horizontal = 8.dp, vertical = 2.dp)
+                    } else {
+                        Modifier.padding(2.dp)
+                    }
+                )
+        )
+    }
+}
+
+@Composable
+private fun TextEditor(
+    layer: OverlayEntity,
+    onLive: (OverlayEntity?) -> Unit,
+    onUpdate: (OverlayEntity) -> Unit
+) {
+    var text by remember(layer.id) { mutableStateOf(layer.text) }
+    val latestLayer by rememberUpdatedState(layer)
+    val latestText by rememberUpdatedState(text)
+    LaunchedEffect(text) {
+        if (text != latestLayer.text) {
+            delay(500L)
+            onUpdate(latestLayer.copy(text = text))
+        }
+    }
+    DisposableEffect(layer.id) {
+        onDispose {
+            if (latestText != latestLayer.text) onUpdate(latestLayer.copy(text = latestText))
+        }
+    }
+    OutlinedTextField(
+        value = text,
+        onValueChange = {
+            text = it
+            onLive(layer.copy(text = it))
+        },
+        label = { Text("Text") },
+        modifier = Modifier.fillMaxWidth()
+    )
+}
+
+@Composable
+private fun OverlayControls(
+    layer: OverlayEntity,
+    live: OverlayEntity?,
+    isText: Boolean,
+    playheadMs: Long,
+    onLive: (OverlayEntity?) -> Unit,
+    onCommit: () -> Unit,
+    onUpdate: (OverlayEntity) -> Unit,
+    onDelete: () -> Unit,
+    onJump: (Long) -> Unit
+) {
+    val current = live ?: layer
+    Text(
+        "Shows from ${formatSeconds(layer.startMs)} for ${formatSeconds(layer.durationMs)}",
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 6.dp)
+    )
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        ChipButton("Start here") { onUpdate(layer.copy(startMs = playheadMs)) }
+        ChipButton("End here", playheadMs > layer.startMs + 200L) {
+            onUpdate(layer.copy(durationMs = playheadMs - layer.startMs))
+        }
+        ChipButton("Go to start") { onJump(layer.startMs) }
+        if (isText) {
+            ChipButton("Bold", true, layer.bold) { onUpdate(layer.copy(bold = !layer.bold)) }
+            ChipButton("Box", true, layer.box) { onUpdate(layer.copy(box = !layer.box)) }
+        }
+        ChipButton("Delete") { onDelete() }
+    }
+    if (isText) {
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            TEXT_COLORS.forEach { argb ->
+                Box(
+                    Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(Color(argb))
+                        .border(
+                            width = if (layer.colorArgb == argb) 3.dp else 1.dp,
+                            color = if (layer.colorArgb == argb) Accent else Color(0xFF555555),
+                            shape = CircleShape
+                        )
+                        .clickable { onUpdate(layer.copy(colorArgb = argb)) }
+                )
+            }
+        }
+    }
+    PropertySlider("Size", current.size, 0.04f..0.4f, true, "${(current.size * 100).roundToInt()}",
+        { onLive(current.copy(size = it)) }, onCommit)
+    PropertySlider("Rotation", current.rotation, -180f..180f, true, "${current.rotation.roundToInt()}°",
+        { onLive(current.copy(rotation = it)) }, onCommit)
+    PropertySlider("Position X", current.x, -0.6f..0.6f, true, "${(current.x * 100).roundToInt()}%",
+        { onLive(current.copy(x = it)) }, onCommit)
+    PropertySlider("Position Y", current.y, -0.6f..0.6f, true, "${(current.y * 100).roundToInt()}%",
+        { onLive(current.copy(y = it)) }, onCommit)
+    PropertySlider("Length", current.durationMs / 1000f, 0.2f..30f, true,
+        String.format(Locale.US, "%.1fs", current.durationMs / 1000f),
+        { onLive(current.copy(durationMs = (it * 1000f).toLong())) }, onCommit)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MusicPanel(
+    audio: AudioEntity?,
+    playheadMs: Long,
+    onAdd: () -> Unit,
+    onUpdate: (AudioEntity) -> Unit,
+    onDelete: () -> Unit,
+    onJump: (Long) -> Unit
+) {
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        ChipButton("+ Add music") { onAdd() }
+        if (audio != null) {
+            ChipButton("Start here") { onUpdate(audio.copy(startMs = playheadMs)) }
+            ChipButton("Go to start") { onJump(audio.startMs) }
+            ChipButton("Delete") { onDelete() }
+        }
+    }
+    if (audio == null) {
+        Text(
+            "Add a song or sound, then tap its green block in the timeline to edit it. " +
+                "Audio plays together with the clips.",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        return
+    }
+    Text(
+        audio.name,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1
+    )
+    Text(
+        "Starts at ${formatSeconds(audio.startMs)}  •  plays ${formatSeconds(audio.lengthMs)}",
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    var volume by remember(audio.id, audio.volume) { mutableFloatStateOf(audio.volume) }
+    Text(
+        "Volume ${(volume * 100).roundToInt()}%",
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 4.dp)
+    )
+    Slider(
+        value = volume,
+        onValueChange = { volume = it },
+        valueRange = 0f..1f,
+        onValueChangeFinished = { onUpdate(audio.copy(volume = volume)) }
+    )
+    var range by remember(audio.id, audio.trimStartMs, audio.trimEndMs) {
+        mutableStateOf(audio.trimStartMs.toFloat()..audio.trimEndMs.toFloat())
+    }
+    Text(
+        "Use ${formatSeconds(range.start.toLong())} to ${formatSeconds(range.endInclusive.toLong())} " +
+            "of ${formatSeconds(audio.sourceMs)}",
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    RangeSlider(
+        value = range,
+        onValueChange = { range = it },
+        valueRange = 0f..audio.sourceMs.toFloat(),
+        onValueChangeFinished = {
+            onUpdate(audio.copy(trimStartMs = range.start.toLong(), trimEndMs = range.endInclusive.toLong()))
+        }
+    )
+}
+
+/** Plays the audio layers in separate players, following the timeline. */
+private class AudioMixer(private val context: Context) {
+    private class Entry(val player: ExoPlayer, val signature: String)
+
+    private val entries = HashMap<Long, Entry>()
+
+    fun update(audios: List<AudioEntity>, timeMs: Long, playing: Boolean) {
+        val ids = audios.map { it.id }.toSet()
+        entries.keys.filter { it !in ids }.forEach { id -> entries.remove(id)?.player?.release() }
+        for (audio in audios) {
+            val signature = "${audio.path}|${audio.trimStartMs}|${audio.trimEndMs}"
+            var entry = entries[audio.id]
+            if (entry == null || entry.signature != signature) {
+                entry?.player?.release()
+                val player = ExoPlayer.Builder(context).build()
+                player.setMediaItem(
+                    MediaItem.Builder()
+                        .setUri(Uri.fromFile(File(audio.path)))
+                        .setClippingConfiguration(
+                            MediaItem.ClippingConfiguration.Builder()
+                                .setStartPositionMs(audio.trimStartMs)
+                                .setEndPositionMs(audio.trimEndMs)
+                                .build()
+                        )
+                        .build()
+                )
+                player.prepare()
+                entry = Entry(player, signature)
+                entries[audio.id] = entry
+            }
+            val player = entry!!.player
+            player.volume = audio.volume
+            val offset = timeMs - audio.startMs
+            val inRange = offset >= 0L && offset < audio.lengthMs
+            if (playing && inRange) {
+                if (!player.playWhenReady) {
+                    player.seekTo(offset)
+                    player.play()
+                } else if (player.isPlaying && abs(player.currentPosition - offset) > 400L) {
+                    player.seekTo(offset)
+                }
+            } else if (player.playWhenReady) {
+                player.pause()
+            }
+        }
+    }
+
+    fun release() {
+        entries.values.forEach { it.player.release() }
+        entries.clear()
     }
 }
 

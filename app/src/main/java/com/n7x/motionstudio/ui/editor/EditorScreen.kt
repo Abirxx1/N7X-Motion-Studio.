@@ -2,6 +2,18 @@ package com.n7x.motionstudio.ui.editor
 
 import android.net.Uri
 import android.view.LayoutInflater
+import android.graphics.Typeface
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.em
+import com.n7x.motionstudio.animation.TextAnimations
+import kotlin.math.ceil
 import android.content.Context
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -164,6 +176,39 @@ private val clipPanels = setOf(
 )
 
 private const val LANE_ROW_DP = 26
+private val SYSTEM_FONTS = listOf(
+    Triple("sans", "Sans", "sans-serif"),
+    Triple("light", "Light", "sans-serif-light"),
+    Triple("medium", "Medium", "sans-serif-medium"),
+    Triple("black", "Black", "sans-serif-black"),
+    Triple("condensed", "Condensed", "sans-serif-condensed"),
+    Triple("serif", "Serif", "serif"),
+    Triple("mono", "Mono", "monospace"),
+    Triple("serifmono", "Serif mono", "serif-monospace"),
+    Triple("cursive", "Cursive", "cursive"),
+    Triple("casual", "Casual", "casual"),
+    Triple("smallcaps", "Small caps", "sans-serif-smallcaps")
+)
+private val BOX_COLORS = listOf(
+    0x99000000, 0xDD000000, 0xDDFFFFFF, 0xCCE53935, 0xCC1E88E5, 0xCC43A047, 0xDDFFEB3B, 0xCC8E24AA
+).map { it.toInt() }
+private val SHADOW_COLORS = listOf(
+    0xFF000000, 0xFFFFFFFF, 0xFFE53935, 0xFF1E88E5, 0xFFFFEB3B, 0xFF00E5FF
+).map { it.toInt() }
+private val fontCache = HashMap<String, FontFamily>()
+
+private fun fontFamilyFor(fontId: String): FontFamily = fontCache.getOrPut(fontId) {
+    try {
+        if (fontId.startsWith("file:")) {
+            FontFamily(Typeface.createFromFile(fontId.removePrefix("file:")))
+        } else {
+            val name = SYSTEM_FONTS.firstOrNull { it.first == fontId }?.third ?: "sans-serif"
+            FontFamily(Typeface.create(name, Typeface.NORMAL))
+        }
+    } catch (e: Exception) {
+        FontFamily.Default
+    }
+}
 private const val MAX_LANE_ROWS = 3
 private val TEXT_COLORS = listOf(
     0xFFFFFFFF, 0xFF000000, 0xFFFFEB3B, 0xFFFF5252, 0xFFFF9800, 0xFF4CAF50, 0xFF00E5FF, 0xFFFF80AB
@@ -237,6 +282,7 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
     var selectedOverlayId by remember { mutableStateOf<Long?>(null) }
     var selectedAudioId by remember { mutableStateOf<Long?>(null) }
     var liveOverlay by remember { mutableStateOf<OverlayEntity?>(null) }
+    var overlayTab by remember { mutableStateOf("edit") }
     var panel by remember { mutableStateOf(Panel.None) }
     var liveTransform by remember { mutableStateOf<Transform?>(null) }
     var liveLook by remember { mutableStateOf<Look?>(null) }
@@ -255,6 +301,10 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
     }
     val srtPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) viewModel.importSrt(uri)
+    }
+    val fontPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        val id = selectedOverlayId
+        if (uri != null && id != null) viewModel.importFont(id, uri)
     }
     val keyMap = remember(clips) { clips.associate { it.id to Keyframes.parse(it.keyframes) } }
 
@@ -294,6 +344,7 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
         else -> if (selected != null) panel else Panel.None
     }
 
+    val compactPreview = activePanel == Panel.Text || activePanel == Panel.Sticker
     LaunchedEffect(overlays, audios) {
         if (selectedOverlayId != null && overlays.none { it.id == selectedOverlayId }) selectedOverlayId = null
         if (selectedAudioId != null && audios.none { it.id == selectedAudioId }) selectedAudioId = null
@@ -387,8 +438,9 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
         // preview
         BoxWithConstraints(
             modifier = Modifier
+                .align(Alignment.CenterHorizontally)
                 .padding(horizontal = 16.dp)
-                .fillMaxWidth()
+                .fillMaxWidth(if (compactPreview) 0.6f else 1f)
                 .aspectRatio(16f / 9f)
                 .clip(RoundedCornerShape(16.dp))
                 .background(Color.Black),
@@ -443,6 +495,7 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                     key(layer.id) {
                         OverlayView(
                             layer = layer,
+                            nowMs = nowMs,
                             boxWidth = maxWidth,
                             widthPx = boxWidthPx,
                             heightPx = boxHeightPx,
@@ -638,7 +691,8 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                     Panel.Sticker -> "Stickers"
                     else -> "Music"
                 },
-                onClose = { panel = Panel.None }
+                onClose = { panel = Panel.None },
+                maxHeight = if (activePanel == Panel.Music) 210.dp else 280.dp
             ) {
                 when (activePanel) {
                     Panel.Text -> {
@@ -657,11 +711,12 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                             ChipButton("Import .srt") { srtPicker.launch(arrayOf("*/*")) }
                         }
                         if (layer != null && layer.kind == "text") {
-                            TextEditor(layer, { liveOverlay = it }, { viewModel.updateOverlay(it) })
-                            OverlayControls(
+                            OverlayEditor(
                                 layer = layer,
                                 live = liveOverlay,
                                 isText = true,
+                                tab = overlayTab,
+                                onTab = { overlayTab = it },
                                 playheadMs = timeMs.toLong(),
                                 onLive = { liveOverlay = it },
                                 onCommit = { liveOverlay?.let { viewModel.updateOverlay(it) } },
@@ -673,7 +728,8 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                                 onJump = { ms ->
                                     timeMs = ms.toFloat()
                                     seekTimeline(exo, clips, ms)
-                                }
+                                },
+                                onPickFont = { fontPicker.launch(arrayOf("*/*")) }
                             )
                         } else {
                             Text(
@@ -702,10 +758,12 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                             }
                         }
                         if (layer != null && layer.kind == "sticker") {
-                            OverlayControls(
+                            OverlayEditor(
                                 layer = layer,
                                 live = liveOverlay,
                                 isText = false,
+                                tab = overlayTab,
+                                onTab = { overlayTab = it },
                                 playheadMs = timeMs.toLong(),
                                 onLive = { liveOverlay = it },
                                 onCommit = { liveOverlay?.let { viewModel.updateOverlay(it) } },
@@ -717,7 +775,8 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
                                 onJump = { ms ->
                                     timeMs = ms.toFloat()
                                     seekTimeline(exo, clips, ms)
-                                }
+                                },
+                                onPickFont = {}
                             )
                         } else {
                             Text(
@@ -1026,10 +1085,11 @@ private fun LaneBlock(
     }
 }
 
-/** A text or sticker layer drawn over the preview. */
+/** A text or sticker layer drawn over the preview, with its animations. */
 @Composable
 private fun OverlayView(
     layer: OverlayEntity,
+    nowMs: Long,
     boxWidth: Dp,
     widthPx: Float,
     heightPx: Float,
@@ -1042,11 +1102,19 @@ private fun OverlayView(
     val endCb by rememberUpdatedState(onDragEnd)
     val clickCb by rememberUpdatedState(onClick)
     val fontSize = with(LocalDensity.current) { (heightPx * layer.size).toSp() }
+    val anim = TextAnimations.evaluate(layer, nowMs - layer.startMs)
     val shape = RoundedCornerShape(6.dp)
     Box(
         modifier = Modifier
             .offset { IntOffset((layer.x * widthPx).roundToInt(), (layer.y * heightPx).roundToInt()) }
-            .graphicsLayer { rotationZ = layer.rotation }
+            .graphicsLayer {
+                rotationZ = layer.rotation + anim.rotation
+                scaleX = anim.scale
+                scaleY = anim.scale
+                alpha = (layer.opacity * anim.alpha).coerceIn(0f, 1f)
+                translationX = anim.dx * widthPx
+                translationY = anim.dy * heightPx
+            }
             .then(if (selected) Modifier.border(1.5.dp, Accent, shape) else Modifier)
             .pointerInput(Unit) { detectTapGestures { clickCb() } }
             .then(
@@ -1065,21 +1133,70 @@ private fun OverlayView(
                 }
             )
     ) {
-        Text(
-            text = layer.text,
-            color = Color(layer.colorArgb),
-            fontSize = fontSize,
-            fontWeight = if (layer.bold) FontWeight.Bold else FontWeight.Normal,
-            textAlign = TextAlign.Center,
-            modifier = Modifier
-                .widthIn(max = boxWidth * 0.92f)
-                .then(
-                    if (layer.box) {
-                        Modifier.background(Color(0x99000000), shape).padding(horizontal = 8.dp, vertical = 2.dp)
-                    } else {
-                        Modifier.padding(2.dp)
-                    }
+        StyledText(layer, fontSize, anim, boxWidth * 0.92f)
+    }
+}
+
+/** Draws the layer's text with its font, colour, outline, shadow and box. */
+@Composable
+private fun StyledText(
+    layer: OverlayEntity,
+    fontSize: TextUnit,
+    anim: TextAnimations.State,
+    maxWidth: Dp
+) {
+    val density = LocalDensity.current
+    val family = remember(layer.fontId) { fontFamilyFor(layer.fontId) }
+    val fontPx = with(density) { fontSize.toPx() }
+    val fill = anim.hue?.let { Color.hsv(it, 0.85f, 1f) } ?: Color(layer.colorArgb)
+    val count = ceil(layer.text.length * anim.reveal).toInt().coerceIn(0, layer.text.length)
+    val shown = buildAnnotatedString {
+        append(layer.text.take(count))
+        withStyle(SpanStyle(color = Color.Transparent)) { append(layer.text.drop(count)) }
+    }
+    val base = TextStyle(
+        fontSize = fontSize,
+        fontFamily = family,
+        fontWeight = if (layer.bold) FontWeight.Bold else FontWeight.Normal,
+        fontStyle = if (layer.italic) FontStyle.Italic else FontStyle.Normal,
+        letterSpacing = layer.letterSpacing.em,
+        textAlign = TextAlign.Center
+    )
+    val shape = RoundedCornerShape(6.dp)
+    Box(
+        Modifier
+            .widthIn(max = maxWidth)
+            .then(
+                if (layer.box) {
+                    Modifier.background(Color(layer.boxColor), shape).padding(horizontal = 8.dp, vertical = 2.dp)
+                } else {
+                    Modifier.padding(2.dp)
+                }
+            )
+    ) {
+        if (layer.outlineWidth > 0f) {
+            Text(
+                text = shown,
+                style = base.copy(
+                    color = Color(layer.outlineColor),
+                    drawStyle = Stroke(width = fontPx * 0.18f * layer.outlineWidth, join = StrokeJoin.Round)
                 )
+            )
+        }
+        Text(
+            text = shown,
+            style = base.copy(
+                color = fill,
+                shadow = if (layer.shadowSize > 0f) {
+                    Shadow(
+                        color = Color(layer.shadowColor),
+                        offset = Offset(fontPx * 0.05f * layer.shadowSize, fontPx * 0.05f * layer.shadowSize),
+                        blurRadius = fontPx * 0.2f * layer.shadowSize
+                    )
+                } else {
+                    null
+                }
+            )
         )
     }
 }
@@ -1116,10 +1233,47 @@ private fun TextEditor(
 }
 
 @Composable
-private fun OverlayControls(
+private fun OverlayEditor(
     layer: OverlayEntity,
     live: OverlayEntity?,
     isText: Boolean,
+    tab: String,
+    onTab: (String) -> Unit,
+    playheadMs: Long,
+    onLive: (OverlayEntity?) -> Unit,
+    onCommit: () -> Unit,
+    onUpdate: (OverlayEntity) -> Unit,
+    onDelete: () -> Unit,
+    onJump: (Long) -> Unit,
+    onPickFont: () -> Unit
+) {
+    val tabs = if (isText) {
+        listOf("edit" to "Edit", "style" to "Style", "font" to "Font", "in" to "Start", "out" to "Stop", "loop" to "Overall")
+    } else {
+        listOf("edit" to "Edit", "in" to "Start", "out" to "Stop", "loop" to "Overall")
+    }
+    val active = if (tabs.any { it.first == tab }) tab else "edit"
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        tabs.forEach { (id, name) -> ChipButton(name, true, active == id) { onTab(id) } }
+    }
+    when (active) {
+        "edit" -> {
+            if (isText) TextEditor(layer, onLive) { onUpdate(it) }
+            EditControls(layer, live, playheadMs, onLive, onCommit, onUpdate, onDelete, onJump)
+        }
+        "style" -> StyleControls(layer, live, onLive, onCommit, onUpdate)
+        "font" -> FontPicker(layer, onUpdate, onPickFont)
+        else -> AnimPicker(active, layer, live, isText, onLive, onCommit, onUpdate)
+    }
+}
+
+@Composable
+private fun EditControls(
+    layer: OverlayEntity,
+    live: OverlayEntity?,
     playheadMs: Long,
     onLive: (OverlayEntity?) -> Unit,
     onCommit: () -> Unit,
@@ -1143,32 +1297,7 @@ private fun OverlayControls(
             onUpdate(layer.copy(durationMs = playheadMs - layer.startMs))
         }
         ChipButton("Go to start") { onJump(layer.startMs) }
-        if (isText) {
-            ChipButton("Bold", true, layer.bold) { onUpdate(layer.copy(bold = !layer.bold)) }
-            ChipButton("Box", true, layer.box) { onUpdate(layer.copy(box = !layer.box)) }
-        }
         ChipButton("Delete") { onDelete() }
-    }
-    if (isText) {
-        Row(
-            modifier = Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            TEXT_COLORS.forEach { argb ->
-                Box(
-                    Modifier
-                        .size(28.dp)
-                        .clip(CircleShape)
-                        .background(Color(argb))
-                        .border(
-                            width = if (layer.colorArgb == argb) 3.dp else 1.dp,
-                            color = if (layer.colorArgb == argb) Accent else Color(0xFF555555),
-                            shape = CircleShape
-                        )
-                        .clickable { onUpdate(layer.copy(colorArgb = argb)) }
-                )
-            }
-        }
     }
     PropertySlider("Size", current.size, 0.04f..0.4f, true, "${(current.size * 100).roundToInt()}",
         { onLive(current.copy(size = it)) }, onCommit)
@@ -1178,9 +1307,273 @@ private fun OverlayControls(
         { onLive(current.copy(x = it)) }, onCommit)
     PropertySlider("Position Y", current.y, -0.6f..0.6f, true, "${(current.y * 100).roundToInt()}%",
         { onLive(current.copy(y = it)) }, onCommit)
+    PropertySlider("Opacity", current.opacity, 0.1f..1f, true, "${(current.opacity * 100).roundToInt()}%",
+        { onLive(current.copy(opacity = it)) }, onCommit)
     PropertySlider("Length", current.durationMs / 1000f, 0.2f..30f, true,
         String.format(Locale.US, "%.1fs", current.durationMs / 1000f),
         { onLive(current.copy(durationMs = (it * 1000f).toLong())) }, onCommit)
+}
+
+@Composable
+private fun ColorRow(colors: List<Int>, selected: Int, onPick: (Int) -> Unit) {
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        colors.forEach { argb ->
+            Box(
+                Modifier
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(Color(argb))
+                    .border(
+                        width = if (selected == argb) 3.dp else 1.dp,
+                        color = if (selected == argb) Accent else Color(0xFF555555),
+                        shape = CircleShape
+                    )
+                    .clickable { onPick(argb) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun StyleControls(
+    layer: OverlayEntity,
+    live: OverlayEntity?,
+    onLive: (OverlayEntity?) -> Unit,
+    onCommit: () -> Unit,
+    onUpdate: (OverlayEntity) -> Unit
+) {
+    val current = live ?: layer
+    val label = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        ChipButton("Bold", true, layer.bold) { onUpdate(layer.copy(bold = !layer.bold)) }
+        ChipButton("Italic", true, layer.italic) { onUpdate(layer.copy(italic = !layer.italic)) }
+        ChipButton("Box", true, layer.box) { onUpdate(layer.copy(box = !layer.box)) }
+    }
+    Text("Text colour", fontSize = 12.sp, color = label)
+    ColorRow(TEXT_COLORS, layer.colorArgb) { onUpdate(layer.copy(colorArgb = it)) }
+    if (layer.box) {
+        Text("Box colour", fontSize = 12.sp, color = label)
+        ColorRow(BOX_COLORS, layer.boxColor) { onUpdate(layer.copy(boxColor = it)) }
+    }
+    PropertySlider("Spacing", current.letterSpacing, -0.05f..0.4f, true,
+        String.format(Locale.US, "%.2f", current.letterSpacing),
+        { onLive(current.copy(letterSpacing = it)) }, onCommit)
+    PropertySlider("Shadow", current.shadowSize, 0f..1f, true, "${(current.shadowSize * 100).roundToInt()}%",
+        { onLive(current.copy(shadowSize = it)) }, onCommit)
+    if (layer.shadowSize > 0f) {
+        Text("Shadow colour", fontSize = 12.sp, color = label)
+        ColorRow(SHADOW_COLORS, layer.shadowColor) { onUpdate(layer.copy(shadowColor = it)) }
+    }
+    PropertySlider("Outline", current.outlineWidth, 0f..1f, true, "${(current.outlineWidth * 100).roundToInt()}%",
+        { onLive(current.copy(outlineWidth = it)) }, onCommit)
+    if (layer.outlineWidth > 0f) {
+        Text("Outline colour", fontSize = 12.sp, color = label)
+        ColorRow(SHADOW_COLORS, layer.outlineColor) { onUpdate(layer.copy(outlineColor = it)) }
+    }
+}
+
+@Composable
+private fun FontPicker(layer: OverlayEntity, onUpdate: (OverlayEntity) -> Unit, onPickFont: () -> Unit) {
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        contentPadding = PaddingValues(vertical = 6.dp)
+    ) {
+        items(SYSTEM_FONTS) { (id, name, _) ->
+            FontTile(name, id, layer.fontId == id) { onUpdate(layer.copy(fontId = id)) }
+        }
+    }
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        ChipButton("Import font (.ttf / .otf)") { onPickFont() }
+        if (layer.fontId.startsWith("file:")) ChipButton("Your font is in use", false, true) {}
+    }
+    Text(
+        "Fonts are the ones built into your phone. You can also import your own .ttf or .otf font file.",
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+@Composable
+private fun FontTile(label: String, fontId: String, selected: Boolean, onClick: () -> Unit) {
+    val family = remember(fontId) { fontFamilyFor(fontId) }
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .width(76.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(2.dp)
+    ) {
+        Box(
+            Modifier
+                .size(width = 72.dp, height = 52.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(SurfaceHigh)
+                .border(
+                    width = if (selected) 2.dp else 0.dp,
+                    color = if (selected) Accent else Color.Transparent,
+                    shape = RoundedCornerShape(8.dp)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("Aa", fontSize = 24.sp, fontFamily = family, color = Color.White)
+        }
+        Text(
+            label,
+            fontSize = 11.sp,
+            maxLines = 1,
+            color = if (selected) Accent else MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
+/** kind: "in" (start), "out" (stop) or "loop" (overall). Every tile plays a small demo. */
+@Composable
+private fun AnimPicker(
+    kind: String,
+    layer: OverlayEntity,
+    live: OverlayEntity?,
+    isText: Boolean,
+    onLive: (OverlayEntity?) -> Unit,
+    onCommit: () -> Unit,
+    onUpdate: (OverlayEntity) -> Unit
+) {
+    val current = live ?: layer
+    val types = when (kind) {
+        "in" -> TextAnimations.IN_TYPES
+        "out" -> TextAnimations.OUT_TYPES
+        else -> TextAnimations.LOOP_TYPES
+    }.filter { isText || it.first !in TextAnimations.TEXT_ONLY }
+    val selectedType = when (kind) {
+        "in" -> layer.inAnim
+        "out" -> layer.outAnim
+        else -> layer.loopAnim
+    }
+    Text(
+        when (kind) {
+            "in" -> "Start animation: plays when the text appears."
+            "out" -> "Stop animation: plays just before the text disappears."
+            else -> "Overall animation: keeps moving the whole time the text is on screen."
+        },
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        contentPadding = PaddingValues(vertical = 6.dp)
+    ) {
+        items(types) { (id, name) ->
+            val demo = animationDemo(kind, id, isText)
+            AnimTile(name, demo, selectedType == id) {
+                onUpdate(
+                    when (kind) {
+                        "in" -> layer.copy(inAnim = id)
+                        "out" -> layer.copy(outAnim = id)
+                        else -> layer.copy(loopAnim = id)
+                    }
+                )
+            }
+        }
+    }
+    Text(
+        TextAnimations.describe(kind, selectedType),
+        fontSize = 12.sp,
+        color = Accent
+    )
+    if (selectedType != "none") {
+        when (kind) {
+            "in" -> PropertySlider("Duration", current.inMs / 1000f, 0.1f..2f, true,
+                String.format(Locale.US, "%.1fs", current.inMs / 1000f),
+                { onLive(current.copy(inMs = (it * 1000f).toLong())) }, onCommit)
+            "out" -> PropertySlider("Duration", current.outMs / 1000f, 0.1f..2f, true,
+                String.format(Locale.US, "%.1fs", current.outMs / 1000f),
+                { onLive(current.copy(outMs = (it * 1000f).toLong())) }, onCommit)
+            else -> PropertySlider("Speed", current.loopSpeed, 0.5f..3f, true,
+                String.format(Locale.US, "%.1fx", current.loopSpeed),
+                { onLive(current.copy(loopSpeed = it)) }, onCommit)
+        }
+    }
+}
+
+/** A sample layer that shows one animation. It lasts 2 seconds and repeats. */
+private fun animationDemo(kind: String, id: String, isText: Boolean): OverlayEntity {
+    val sample = OverlayEntity(
+        id = 0L, projectId = 0L, kind = if (isText) "text" else "sticker",
+        text = if (isText) "Text" else "😀",
+        startMs = 0L, durationMs = 2000L, x = 0f, y = 0f, size = 0.34f, rotation = 0f,
+        colorArgb = -1, bold = true, box = false
+    )
+    return when (kind) {
+        "in" -> sample.copy(inAnim = id, inMs = 700L)
+        "out" -> sample.copy(outAnim = id, outMs = 700L)
+        else -> sample.copy(loopAnim = id, loopSpeed = 1f)
+    }
+}
+
+@Composable
+private fun AnimTile(name: String, demo: OverlayEntity, selected: Boolean, onClick: () -> Unit) {
+    val infinite = rememberInfiniteTransition(label = "animTile")
+    val progress by infinite.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(2000, easing = LinearEasing), RepeatMode.Restart),
+        label = "progress"
+    )
+    val density = LocalDensity.current
+    val widthDp = 72.dp
+    val heightDp = 52.dp
+    val widthPx = with(density) { widthDp.toPx() }
+    val heightPx = with(density) { heightDp.toPx() }
+    val anim = TextAnimations.evaluate(demo, (progress * demo.durationMs).toLong())
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .width(76.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(2.dp)
+    ) {
+        Box(
+            Modifier
+                .size(width = widthDp, height = heightDp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFF14141A))
+                .border(
+                    width = if (selected) 2.dp else 0.dp,
+                    color = if (selected) Accent else Color.Transparent,
+                    shape = RoundedCornerShape(8.dp)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                Modifier.graphicsLayer {
+                    rotationZ = anim.rotation
+                    scaleX = anim.scale
+                    scaleY = anim.scale
+                    alpha = anim.alpha
+                    translationX = anim.dx * widthPx
+                    translationY = anim.dy * heightPx
+                }
+            ) {
+                StyledText(demo, with(density) { (heightPx * demo.size).toSp() }, anim, widthDp)
+            }
+        }
+        Text(
+            name,
+            fontSize = 11.sp,
+            maxLines = 1,
+            color = if (selected) Accent else MaterialTheme.colorScheme.onSurface
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1403,7 +1796,12 @@ private fun ClipBlock(
 // ================= panels =================
 
 @Composable
-private fun ToolPanel(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
+private fun ToolPanel(
+    title: String,
+    onClose: () -> Unit,
+    maxHeight: Dp = 210.dp,
+    content: @Composable () -> Unit
+) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -1414,7 +1812,7 @@ private fun ToolPanel(title: String, onClose: () -> Unit, content: @Composable (
             Text(title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             TextButton(onClick = onClose) { Text("Done") }
         }
-        Column(Modifier.heightIn(max = 210.dp).verticalScroll(rememberScrollState())) { content() }
+        Column(Modifier.heightIn(max = maxHeight).verticalScroll(rememberScrollState())) { content() }
     }
 }
 

@@ -346,12 +346,14 @@ class EditorViewModel(
             "sticker" -> OverlayEntity(
                 id = id, projectId = projectId, kind = "sticker", text = text,
                 startMs = start, durationMs = duration, x = 0f, y = 0f, size = 0.24f,
-                rotation = 0f, colorArgb = -1, bold = false, box = false
+                rotation = 0f, colorArgb = -1, bold = false, box = false,
+                inAnim = "pop"
             )
             else -> OverlayEntity(
                 id = id, projectId = projectId, kind = "text", text = text,
                 startMs = start, durationMs = duration, x = 0f, y = 0f, size = 0.11f,
-                rotation = 0f, colorArgb = -1, bold = true, box = false
+                rotation = 0f, colorArgb = -1, bold = true, box = false,
+                inAnim = "slideUp", outAnim = "fade"
             )
         }
         commit(newOverlays = _overlays.value + layer)
@@ -369,6 +371,34 @@ class EditorViewModel(
         )
         if (fixed == list[index]) return
         commit(newOverlays = list.toMutableList().also { it[index] = fixed })
+    }
+
+    private fun editOverlay(id: Long, change: (OverlayEntity) -> OverlayEntity) {
+        val layer = _overlays.value.firstOrNull { it.id == id } ?: return
+        updateOverlay(change(layer))
+    }
+
+    fun importFont(id: Long, uri: Uri) {
+        viewModelScope.launch {
+            val file = importer.copyFont(projectId, uri)
+            if (file == null) {
+                _message.value = "Pick a .ttf or .otf font file"
+                return@launch
+            }
+            val usable = withContext(Dispatchers.IO) {
+                try {
+                    android.graphics.Typeface.createFromFile(file) != null
+                } catch (e: Exception) {
+                    false
+                }
+            }
+            if (!usable) {
+                file.delete()
+                _message.value = "This font file could not be used"
+                return@launch
+            }
+            editOverlay(id) { it.copy(fontId = "file:" + file.absolutePath) }
+        }
     }
 
     fun deleteOverlay(id: Long) {
@@ -453,6 +483,10 @@ class EditorViewModel(
         val keep = _clips.value.map { it.path }.toSet()
         mediaDir.listFiles()?.forEach { file ->
             if (file.absolutePath !in keep) file.delete()
+        }
+        val keepFonts = _overlays.value.map { it.fontId.removePrefix("file:") }.toSet()
+        mediaDir.parentFile?.let { File(it, "fonts") }?.listFiles()?.forEach { file ->
+            if (file.absolutePath !in keepFonts) file.delete()
         }
         val keepAudio = _audios.value.map { it.path }.toSet()
         mediaDir.parentFile?.let { File(it, "audio") }?.listFiles()?.forEach { file ->

@@ -80,6 +80,21 @@ class MediaImporter(private val context: Context) {
         }
     }
 
+    /** Copies a .ttf / .otf font into the project. */
+    suspend fun copyFont(projectId: Long, uri: Uri): File? = withContext(Dispatchers.IO) {
+        try {
+            val name = (displayName(uri) ?: "").lowercase()
+            if (!name.endsWith(".ttf") && !name.endsWith(".otf")) return@withContext null
+            val dir = File(context.filesDir, "projects/$projectId/fonts").apply { mkdirs() }
+            val file = File(dir, "${System.currentTimeMillis()}.${name.substringAfterLast('.')}")
+            val input = context.contentResolver.openInputStream(uri) ?: return@withContext null
+            input.use { src -> file.outputStream().use { dst -> src.copyTo(dst) } }
+            file
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     class ImportedAudio(val file: File, val name: String, val durationMs: Long)
 
     /** Copies an audio file into the project and reads its length. */

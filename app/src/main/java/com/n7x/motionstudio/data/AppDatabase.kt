@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ProjectEntity::class, MediaClipEntity::class, OverlayEntity::class, AudioEntity::class],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -101,5 +101,25 @@ val MIGRATION_5_6 = object : Migration(5, 6) {
                 "ON UPDATE NO ACTION ON DELETE CASCADE)"
         )
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_audio_tracks_projectId` ON `audio_tracks` (`projectId`)")
+    }
+}
+
+val MIGRATION_6_7 = object : Migration(6, 7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `overlays` ADD COLUMN `fontId` TEXT NOT NULL DEFAULT 'sans'")
+        db.execSQL("ALTER TABLE `overlays` ADD COLUMN `italic` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `overlays` ADD COLUMN `letterSpacing` REAL NOT NULL DEFAULT 0.0")
+        db.execSQL("ALTER TABLE `overlays` ADD COLUMN `opacity` REAL NOT NULL DEFAULT 1.0")
+        db.execSQL("ALTER TABLE `overlays` ADD COLUMN `shadowSize` REAL NOT NULL DEFAULT 0.0")
+        db.execSQL("ALTER TABLE `overlays` ADD COLUMN `shadowColor` INTEGER NOT NULL DEFAULT -16777216")
+        db.execSQL("ALTER TABLE `overlays` ADD COLUMN `outlineWidth` REAL NOT NULL DEFAULT 0.0")
+        db.execSQL("ALTER TABLE `overlays` ADD COLUMN `outlineColor` INTEGER NOT NULL DEFAULT -16777216")
+        db.execSQL("ALTER TABLE `overlays` ADD COLUMN `boxColor` INTEGER NOT NULL DEFAULT -1728053248")
+        db.execSQL("ALTER TABLE `overlays` ADD COLUMN `inAnim` TEXT NOT NULL DEFAULT 'none'")
+        db.execSQL("ALTER TABLE `overlays` ADD COLUMN `inMs` INTEGER NOT NULL DEFAULT 600")
+        db.execSQL("ALTER TABLE `overlays` ADD COLUMN `outAnim` TEXT NOT NULL DEFAULT 'none'")
+        db.execSQL("ALTER TABLE `overlays` ADD COLUMN `outMs` INTEGER NOT NULL DEFAULT 600")
+        db.execSQL("ALTER TABLE `overlays` ADD COLUMN `loopAnim` TEXT NOT NULL DEFAULT 'none'")
+        db.execSQL("ALTER TABLE `overlays` ADD COLUMN `loopSpeed` REAL NOT NULL DEFAULT 1.0")
     }
 }

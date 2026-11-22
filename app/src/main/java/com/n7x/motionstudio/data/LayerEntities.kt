@@ -34,7 +34,22 @@ data class OverlayEntity(
     val rotation: Float,
     val colorArgb: Int,
     val bold: Boolean,
-    val box: Boolean
+    val box: Boolean,
+    val fontId: String = "sans",
+    val italic: Boolean = false,
+    val letterSpacing: Float = 0f,
+    val opacity: Float = 1f,
+    val shadowSize: Float = 0f,
+    val shadowColor: Int = -16777216,
+    val outlineWidth: Float = 0f,
+    val outlineColor: Int = -16777216,
+    val boxColor: Int = -1728053248,
+    val inAnim: String = "none",
+    val inMs: Long = 600L,
+    val outAnim: String = "none",
+    val outMs: Long = 600L,
+    val loopAnim: String = "none",
+    val loopSpeed: Float = 1f
 )
 
 /** An audio / music layer placed on the timeline at startMs. */

@@ -1,6 +1,8 @@
 package com.n7x.motionstudio.ui.home
 
 import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import com.n7x.motionstudio.R
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -67,7 +69,14 @@ fun HomeScreen(
             .padding(horizontal = 20.dp)
     ) {
         Spacer(Modifier.height(24.dp))
-        Text("N7X Motion Studio", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Image(
+                painterResource(R.drawable.ic_logo),
+                contentDescription = null,
+                modifier = Modifier.size(44.dp)
+            )
+            Text("  N7X Motion Studio", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+        }
         Text(
             "Create. Animate. Export.",
             color = MaterialTheme.colorScheme.onSurfaceVariant

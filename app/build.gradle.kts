@@ -13,8 +13,8 @@ android {
         applicationId = "com.n7x.motionstudio"
         minSdk = 28
         targetSdk = 34
-        versionCode = 12
-        versionName = "0.6.1"
+        versionCode = 13
+        versionName = "0.7.0"
     }
 
     signingConfigs {
@@ -64,6 +64,8 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.media3:media3-effect:1.4.1")
+    implementation("androidx.media3:media3-transformer:1.4.1")
+    implementation("com.google.guava:guava:33.2.1-android")
 }
 
 // The filter and transition previews use these two pictures. Fail the build if they are missing.

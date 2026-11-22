@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.n7x.motionstudio.N7XApp
+import com.n7x.motionstudio.export.ExportController
+import com.n7x.motionstudio.export.ExportSettings
 import com.n7x.motionstudio.animation.Easing
 import com.n7x.motionstudio.animation.Keyframes
 import com.n7x.motionstudio.animation.Transform
@@ -42,7 +44,8 @@ class EditorViewModel(
     private val clipDao: MediaClipDao,
     private val importer: MediaImporter,
     private val projectId: Long,
-    private val mediaDir: File
+    private val mediaDir: File,
+    app: N7XApp
 ) : ViewModel() {
 
     private val _project = MutableStateFlow<ProjectEntity?>(null)
@@ -73,6 +76,23 @@ class EditorViewModel(
     private val redoStack = ArrayDeque<EditSnapshot>()
     private val idCounter = AtomicLong(1L)
     private var loaded = false
+
+    private val exportController = ExportController(app)
+    val exportState: StateFlow<ExportController.State> = exportController.state
+
+    init {
+        if (exportController.recoverIfInterrupted()) {
+            _message.value = "The last export was interrupted. Open Export to try again."
+        }
+    }
+
+    fun startExport(settings: ExportSettings) {
+        exportController.start(viewModelScope, settings, _clips.value, _overlays.value, _audios.value)
+    }
+
+    fun cancelExport() = exportController.cancel()
+
+    fun resetExport() = exportController.reset()
 
     init {
         viewModelScope.launch {
@@ -478,6 +498,7 @@ class EditorViewModel(
     }
 
     override fun onCleared() {
+        exportController.cancelIfRunning()
         // remove media files that no clip uses any more (deleted clips, undone imports)
         if (!loaded || _importing.value) return
         val keep = _clips.value.map { it.path }.toSet()
@@ -519,7 +540,8 @@ class EditorViewModelFactory(
             db.mediaClipDao(),
             MediaImporter(app),
             projectId,
-            mediaDir
+            mediaDir,
+            app
         ) as T
     }
 }

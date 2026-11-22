@@ -2,6 +2,9 @@ package com.n7x.motionstudio.ui.editor
 
 import android.net.Uri
 import android.view.LayoutInflater
+import androidx.activity.compose.BackHandler
+import com.n7x.motionstudio.export.ExportController
+import com.n7x.motionstudio.ui.export.ExportDialog
 import android.graphics.Typeface
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.StrokeJoin
@@ -283,6 +286,8 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
     var selectedAudioId by remember { mutableStateOf<Long?>(null) }
     var liveOverlay by remember { mutableStateOf<OverlayEntity?>(null) }
     var overlayTab by remember { mutableStateOf("edit") }
+    var showExport by remember { mutableStateOf(false) }
+    val exportState by viewModel.exportState.collectAsState()
     var panel by remember { mutableStateOf(Panel.None) }
     var liveTransform by remember { mutableStateOf<Transform?>(null) }
     var liveLook by remember { mutableStateOf<Look?>(null) }
@@ -413,6 +418,20 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {
+        if (showExport) {
+            ExportDialog(
+                state = exportState,
+                totalMs = total,
+                onStart = { viewModel.startExport(it) },
+                onCancel = { viewModel.cancelExport() },
+                onClose = {
+                    viewModel.resetExport()
+                    showExport = false
+                }
+            )
+        }
+        BackHandler(enabled = showExport && exportState is ExportController.State.Running) { }
+
         // top bar
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
@@ -430,8 +449,7 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
             )
             TextButton(onClick = { viewModel.undo() }, enabled = canUndo) { Text("Undo") }
             TextButton(onClick = { viewModel.redo() }, enabled = canRedo) { Text("Redo") }
-            // Export arrives in Phase 9
-            Button(onClick = {}, enabled = false) { Text("Export") }
+            Button(onClick = { showExport = true }, enabled = clips.isNotEmpty()) { Text("Export") }
             Spacer(Modifier.width(8.dp))
         }
 

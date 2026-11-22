@@ -8,7 +8,7 @@ data class ExportSettings(
     val fps: Int = 0,                // 0 = keep the source frame rate, otherwise the highest rate to keep
     val h265: Boolean = false,
     val customMbps: Float = 0f,      // 0 = automatic
-    val audioKbps: Int = 192
+    val audioKbps: Int = 128         // only used for the size estimate, the phone's AAC encoder decides
 ) {
     val width: Int get() = resolution * 16 / 9
     val height: Int get() = resolution

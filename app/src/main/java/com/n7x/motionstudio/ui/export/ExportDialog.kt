@@ -232,12 +232,12 @@ private fun SettingsForm(totalMs: Long, onStart: (ExportSettings) -> Unit, onClo
             valueRange = 2f..80f
         )
     }
-    Label("Audio quality")
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        listOf(128, 192, 256).forEach { k ->
-            ExportChip("$k kbps", true, settings.audioKbps == k) { settings = settings.copy(audioKbps = k) }
-        }
-    }
+    Text(
+        "Audio: AAC, quality chosen by the phone.",
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 12.dp)
+    )
 
     Spacer(Modifier.height(14.dp))
     Text(

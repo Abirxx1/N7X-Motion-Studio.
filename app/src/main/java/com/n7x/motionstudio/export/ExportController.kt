@@ -9,7 +9,6 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import androidx.media3.common.MimeTypes
-import androidx.media3.transformer.AudioEncoderSettings
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.ExportException
@@ -120,14 +119,10 @@ class ExportController(private val app: Application) {
                 .setBitrate((settings.videoMbps() * 1_000_000f).toInt())
                 .setBitrateMode(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
                 .build()
-            val audioSettings = AudioEncoderSettings.Builder()
-                .setBitrate(settings.audioKbps * 1000)
-                .build()
             // fallback is off: if the phone cannot do what was asked, the export fails instead of
             // silently producing a different resolution or codec
             val encoderFactory = DefaultEncoderFactory.Builder(app)
                 .setRequestedVideoEncoderSettings(videoSettings)
-                .setRequestedAudioEncoderSettings(audioSettings)
                 .setEnableFallback(false)
                 .build()
 

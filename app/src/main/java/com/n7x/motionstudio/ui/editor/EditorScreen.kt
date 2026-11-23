@@ -287,6 +287,7 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
     var liveOverlay by remember { mutableStateOf<OverlayEntity?>(null) }
     var overlayTab by remember { mutableStateOf("edit") }
     var showExport by remember { mutableStateOf(false) }
+    var previewEpoch by remember { mutableStateOf(0) }
     val exportState by viewModel.exportState.collectAsState()
     var panel by remember { mutableStateOf(Panel.None) }
     var liveTransform by remember { mutableStateOf<Transform?>(null) }
@@ -318,7 +319,7 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
     DisposableEffect(mixer) { onDispose { mixer.release() } }
 
     // rebuild the playlist whenever the clips change
-    LaunchedEffect(clips) {
+    LaunchedEffect(clips, previewEpoch) {
         if (clips.isEmpty()) {
             exo.clearMediaItems()
             timeMs = 0f
@@ -422,12 +423,26 @@ fun EditorScreen(viewModel: EditorViewModel, onBack: () -> Unit) {
             ExportDialog(
                 state = exportState,
                 totalMs = total,
-                onStart = { viewModel.startExport(it) },
+                onStart = {
+                    // the phone has only a few hardware video decoders: free the preview's ones first
+                    exo.pause()
+                    exo.stop()
+                    exo.clearMediaItems()
+                    mixer.release()
+                    viewModel.startExport(it)
+                },
                 onCancel = { viewModel.cancelExport() },
-                onRetrySafe = { viewModel.retryExportSafe() },
+                onRetrySafe = {
+                    exo.pause()
+                    exo.stop()
+                    exo.clearMediaItems()
+                    mixer.release()
+                    viewModel.retryExportSafe()
+                },
                 onClose = {
                     viewModel.resetExport()
                     showExport = false
+                    previewEpoch++   // loads the clips into the preview again
                 }
             )
         }

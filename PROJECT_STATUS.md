@@ -1,6 +1,6 @@
 # N7X Motion Studio - project status
 
-Version: 0.8.0 (export fixes, step 1 of the bug-fix plan)
+Version: 0.8.1 (export fixes, step 1 of the bug-fix plan)
 
 ## Honest state
 Nothing in this file has been tested on a phone by the developer assistant. Items marked "untested" need a real export.
@@ -13,6 +13,12 @@ Nothing in this file has been tested on a phone by the developer assistant. Item
 - Export errors now carry a full report (plan + stack trace) with a "Copy details" button.
 - "Safe mode" (settings + retry button after a failure): no custom audio processing, no frame dropping,
   clips with changed speed lose their sound.
+
+## 0.8.1
+- First real error report: "Codec exception ... VideoDecoder c2.qti.avc.decoder, start failed" on a
+  3840x1728 60 fps H.264 clip. Suspected cause (not confirmed): the editor preview player kept its
+  hardware decoder while the export needed one. Fix: the preview player and music players are released
+  when an export starts, and the preview is rebuilt when the export dialog closes.
 
 ## Known problems, root cause not confirmed
 - Slow-motion export errors: cause unknown, needs the copied error report. Suspects: audio speed

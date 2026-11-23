@@ -392,6 +392,15 @@ private fun FailedView(state: ExportController.State.Failed, onRetrySafe: () -> 
         }
         ExportChip("Close") { onClose() }
     }
+    if (state.details.contains("VideoDecoder")) {
+        Text(
+            "The phone could not start the video decoder. Close other apps that use video, " +
+                "then try again. Very large videos (4K 60 fps) need a lot of memory.",
+            fontSize = 11.sp,
+            color = Color(0xFFFFB74D),
+            modifier = Modifier.padding(top = 8.dp)
+        )
+    }
     Text(
         "Copy details and send them to fix the problem.",
         fontSize = 11.sp,

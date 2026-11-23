@@ -39,7 +39,25 @@ import kotlin.math.ceil
 
 /**
  * Turns the project (clips, text, stickers, music) into a Media3 Composition.
- * Keyframes, transitions and text animations use the same functions as the preview.
+ *
+ * IMPORTANT (fixed in 0.8.2): keyframes, transitions and text/sticker overlays used to be
+ * attached as Composition-level effects (Composition.Builder.setEffects). Media3 1.4.1 does not
+ * reliably apply composition-level video effects - this is a known limitation (see the TODO in
+ * Media3's own Composition.java about "composition level effects are only applied consistently
+ * between the different VideoGraphs", bug b/302695659, and
+ * https://github.com/androidx/media/issues/1687 where a Media3 engineer confirms composition
+ * level effects are not supported yet and says to add the effect to every EditedMediaItem
+ * instead). That mismatch is the most likely reason transitions/text/keyframes showed in the
+ * preview but not in the exported file.
+ *
+ * Fix: the same MotionTransformation/MotionColor/OverlayEffect objects are now attached to every
+ * clip's own EditedMediaItem (the "tail" list below), instead of to the Composition. All clips
+ * still sit in one EditedMediaItemSequence, and per https://github.com/androidx/media/issues/1658
+ * the presentationTimeUs an item's effect receives is continuous across that whole sequence (not
+ * reset to 0 per item), so TimelineMotion's existing whole-timeline-millisecond math keeps working
+ * unchanged.
+ *
+ * This fix is UNTESTED until a real export is checked on the phone.
  */
 class ExportEngine(private val context: Context) {
 
@@ -57,25 +75,28 @@ class ExportEngine(private val context: Context) {
         val temp = mutableListOf<File>()
         val totalMs = clips.sumOf { it.timelineMs() }
 
+        // Keyframe/transition motion and text/sticker overlays, evaluated on the whole timeline.
+        // Built once and attached to EVERY clip's own effects list (see class doc above) instead
+        // of to the Composition, because composition-level effects are not reliable in Media3
+        // 1.4.1.
+        val motion = TimelineMotion(clips)
+        val overlayList = overlays.mapNotNull { overlayFor(it, outW, outH, totalMs) }
+        val perClipTail = mutableListOf<Effect>()
+        if (motion.needed) {
+            perClipTail.add(MotionTransformation(motion, outW.toFloat() / outH.toFloat()))
+            perClipTail.add(MotionColor(motion))
+        }
+        if (overlayList.isNotEmpty()) {
+            perClipTail.add(OverlayEffect(ImmutableList.copyOf(overlayList)))
+        }
+
         val sequences = mutableListOf<EditedMediaItemSequence>()
-        sequences.add(EditedMediaItemSequence(clips.map { videoItem(it, settings, outW, outH) }))
+        sequences.add(EditedMediaItemSequence(clips.map { videoItem(it, settings, outW, outH, perClipTail) }))
         for (audio in audios) {
             audioSequence(audio, settings, totalMs, workDir, temp)?.let { sequences.add(it) }
         }
 
-        // effects on the finished timeline: motion and transitions first, then text on top
-        val frameEffects = mutableListOf<Effect>()
-        val motion = TimelineMotion(clips)
-        if (motion.needed) {
-            frameEffects.add(MotionTransformation(motion, outW.toFloat() / outH.toFloat()))
-            frameEffects.add(MotionColor(motion))
-        }
-        val overlayList = overlays.mapNotNull { overlayFor(it, outW, outH, totalMs) }
-        if (overlayList.isNotEmpty()) {
-            frameEffects.add(OverlayEffect(ImmutableList.copyOf(overlayList)))
-        }
         val builder = Composition.Builder(sequences)
-        if (frameEffects.isNotEmpty()) builder.setEffects(Effects(emptyList(), frameEffects))
         return Prepared(builder.build(), temp, describe(settings, clips, overlays, audios))
     }
 
@@ -105,10 +126,16 @@ class ExportEngine(private val context: Context) {
                     "source=${a.sourceMs}ms volume=${a.volume} file=${File(a.path).name}"
             )
         }
-        appendLine("text/sticker layers: ${overlays.size}")
+        appendLine("text/sticker layers: ${overlays.size} (effects attached per-clip, see export engine note)")
     }
 
-    private fun videoItem(clip: MediaClipEntity, s: ExportSettings, w: Int, h: Int): EditedMediaItem {
+    private fun videoItem(
+        clip: MediaClipEntity,
+        s: ExportSettings,
+        w: Int,
+        h: Int,
+        perClipTail: List<Effect>
+    ): EditedMediaItem {
         val mediaItem = MediaItem.Builder()
             .setUri(Uri.fromFile(File(clip.path)))
             .apply {
@@ -149,6 +176,9 @@ class ExportEngine(private val context: Context) {
         if (s.fps > 0 && !s.safeMode) {
             video.add(FrameDropEffect.createDefaultFrameDropEffect(s.fps.toFloat()))
         }
+        // keyframes/transitions/text run last, after the frame already matches the output
+        // resolution and aspect ratio (Presentation above), on every clip's own item.
+        video.addAll(perClipTail)
         if (clip.isVideo && clip.volume != 1f && !s.safeMode) audio.add(volumeProcessor(clip.volume))
 
         val item = EditedMediaItem.Builder(mediaItem).setEffects(Effects(audio, video))
